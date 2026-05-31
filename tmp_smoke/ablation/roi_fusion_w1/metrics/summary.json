@@ -1,0 +1,45 @@
+{
+  "num_samples": 3,
+  "overall": {
+    "global_absrel": 1.1247819662094116,
+    "roi_absrel": 1.1321690082550049,
+    "boundary_absrel": 1.1247819662094116,
+    "global_rmse": 0.3973071773846944,
+    "roi_rmse": 0.39705514907836914,
+    "boundary_rmse": 0.3973071773846944,
+    "global_delta1": 0.2152777761220932,
+    "roi_delta1": 0.2152253786722819,
+    "boundary_delta1": 0.2152777761220932,
+    "baseline_roi_absrel": 1.083330233891805,
+    "roi_absrel_improvement": -0.04883877436319987
+  },
+  "per_class": {
+    "mirror": {
+      "global_absrel": 1.1505873203277588,
+      "roi_absrel": 1.1305269002914429,
+      "boundary_absrel": 1.1505873203277588,
+      "global_rmse": 0.39552128314971924,
+      "roi_rmse": 0.395969957113266,
+      "boundary_rmse": 0.39552128314971924,
+      "global_delta1": 0.2161458283662796,
+      "roi_delta1": 0.21717357635498047,
+      "boundary_delta1": 0.2161458283662796,
+      "baseline_roi_absrel": 1.0932915210723877,
+      "roi_absrel_improvement": -0.037235379219055176
+    },
+    "glass": {
+      "global_absrel": 1.0731712579727173,
+      "roi_absrel": 1.135453224182129,
+      "boundary_absrel": 1.0731712579727173,
+      "global_rmse": 0.4008789658546448,
+      "roi_rmse": 0.39922553300857544,
+      "boundary_rmse": 0.4008789658546448,
+      "global_delta1": 0.2135416716337204,
+      "roi_delta1": 0.21132898330688477,
+      "boundary_delta1": 0.2135416716337204,
+      "baseline_roi_absrel": 1.0634076595306396,
+      "roi_absrel_improvement": -0.07204556465148926
+    }
+  },
+  "roi_absrel_improvement_mean": -0.04883877436319987
+}

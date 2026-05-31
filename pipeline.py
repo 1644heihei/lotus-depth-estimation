@@ -6,7 +6,6 @@ import torch
 import torch.nn.functional as F
 from packaging import version
 from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection
-import tensorboard
 from utils.image_utils import resize_max_res, get_tv_resample_method, resize_back, get_pil_resample_method
 from torchvision.transforms.functional import resize
 from torchvision.transforms import InterpolationMode
@@ -652,6 +651,34 @@ class DirectDiffusionPipeline(
         latents = latents * self.scheduler.init_noise_sigma
         return latents
 
+    def encode_semantic_mask_latents(
+        self,
+        semantic_mask: Optional[torch.FloatTensor],
+        target_hw,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> Optional[torch.FloatTensor]:
+        """
+        Encode semantic mask into latent space so it can be fused with RGB latents.
+        semantic_mask expected shape: [B,1,H,W] or [B,C,H,W], values in [0,1].
+        """
+        if semantic_mask is None:
+            return None
+        if semantic_mask.ndim != 4:
+            raise ValueError(f"semantic_mask must be 4D [B,C,H,W], got shape={semantic_mask.shape}")
+        if semantic_mask.shape[1] > 1:
+            semantic_mask = semantic_mask[:, :1]
+
+        semantic_mask = semantic_mask.to(device=device, dtype=dtype)
+        semantic_mask = torch.clamp(semantic_mask, 0.0, 1.0)
+        semantic_mask = F.interpolate(semantic_mask, size=target_hw, mode="bilinear", align_corners=False)
+
+        # Reuse frozen VAE encoder by lifting mask to pseudo-RGB.
+        semantic_rgb = semantic_mask.repeat(1, 3, 1, 1) * 2.0 - 1.0
+        sem_latents = self.vae.encode(semantic_rgb).latent_dist.sample()
+        sem_latents = sem_latents * self.vae.config.scaling_factor
+        return sem_latents
+
     # Copied from diffusers.pipelines.latent_consistency_models.pipeline_latent_consistency_text2img.LatentConsistencyModelPipeline.get_guidance_scale_embedding
     def get_guidance_scale_embedding(
         self, w: torch.Tensor, embedding_dim: int = 512, dtype: torch.dtype = torch.float32
@@ -1019,6 +1046,8 @@ class LotusDPipeline(DirectDiffusionPipeline):
     def __call__(
         self,
         rgb_in: Optional[torch.FloatTensor] = None,
+        semantic_mask: Optional[torch.FloatTensor] = None,
+        semantic_strength: float = 0.0,
         task_emb: Optional[torch.FloatTensor] = None,
         prompt: Union[str, List[str]] = None,
         timesteps: List[int] = None,
@@ -1120,6 +1149,14 @@ class LotusDPipeline(DirectDiffusionPipeline):
         # 4. Prepare latent variables
         rgb_latents = self.vae.encode(rgb_in.to(device)).latent_dist.sample()
         rgb_latents = rgb_latents * self.vae.config.scaling_factor
+        if semantic_mask is not None and semantic_strength > 0:
+            sem_latents = self.encode_semantic_mask_latents(
+                semantic_mask=semantic_mask,
+                target_hw=rgb_in.shape[-2:],
+                dtype=rgb_in.dtype,
+                device=device,
+            )
+            rgb_latents = rgb_latents + semantic_strength * sem_latents
 
         # 5. Denoising
         t = timesteps[0]
@@ -1169,6 +1206,8 @@ class LotusGPipeline(DirectDiffusionPipeline):
     def __call__(
         self,
         rgb_in: Optional[torch.FloatTensor] = None, # Modification 240430
+        semantic_mask: Optional[torch.FloatTensor] = None,
+        semantic_strength: float = 0.0,
         task_emb: Optional[torch.FloatTensor] = None, 
         prompt: Union[str, List[str]] = None,
         num_inference_steps: int = 50,
@@ -1296,6 +1335,14 @@ class LotusGPipeline(DirectDiffusionPipeline):
         
         rgb_latents = self.vae.encode(rgb_in.to(device)).latent_dist.sample()
         rgb_latents = rgb_latents * self.vae.config.scaling_factor
+        if semantic_mask is not None and semantic_strength > 0:
+            sem_latents = self.encode_semantic_mask_latents(
+                semantic_mask=semantic_mask,
+                target_hw=rgb_in.shape[-2:],
+                dtype=rgb_in.dtype,
+                device=device,
+            )
+            rgb_latents = rgb_latents + semantic_strength * sem_latents
 
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)

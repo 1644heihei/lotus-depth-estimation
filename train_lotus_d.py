@@ -28,6 +28,7 @@ from glob import glob
 import accelerate
 import datasets
 import numpy as np
+import cv2
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
@@ -54,6 +55,7 @@ from diffusers.utils.torch_utils import is_compiled_module
 from pipeline import LotusDPipeline
 from utils.image_utils import concatenate_images, colorize_depth_map
 from utils.hypersim_dataset import get_hypersim_dataset_depth_normal
+from utils.semantic_mask_utils import load_mask_for_image
 from utils.vkitti_dataset import VKITTIDataset, VKITTITransform, collate_fn_vkitti
 
 from eval import evaluation_depth, evaluation_normal
@@ -67,6 +69,22 @@ logger = get_logger(__name__, log_level="INFO")
 
 TOP5_STEPS_DEPTH = []
 TOP5_STEPS_NORMAL = []
+
+
+def build_semantic_mask_batch(image_paths, mask_root, target_hw, device):
+    if not mask_root:
+        return None
+    h, w = target_hw
+    mask_list = []
+    for image_path in image_paths:
+        mask_np = load_mask_for_image(image_path, mask_root)
+        if mask_np is None:
+            mask_np = np.zeros((h, w), dtype=np.float32)
+        else:
+            mask_np = cv2.resize(mask_np.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+        mask_t = torch.from_numpy(mask_np).float().unsqueeze(0)
+        mask_list.append(mask_t)
+    return torch.stack(mask_list, dim=0).to(device)
 
 def run_example_validation(pipeline, task, args, step, accelerator, generator):
     validation_images = glob(os.path.join(args.validation_images, "*.jpg")) + glob(os.path.join(args.validation_images, "*.png"))
@@ -596,6 +614,30 @@ def parse_args():
             " more information see https://huggingface.co/docs/accelerate/v0.17.0/en/package_reference/accelerator#accelerate.Accelerator"
         ),
     )
+    parser.add_argument(
+        "--semantic_mask_dir_hypersim",
+        type=str,
+        default=None,
+        help="Optional mask directory for Hypersim images (same basename as RGB).",
+    )
+    parser.add_argument(
+        "--semantic_mask_dir_vkitti",
+        type=str,
+        default=None,
+        help="Optional mask directory for VKITTI images (same basename as RGB).",
+    )
+    parser.add_argument(
+        "--semantic_mask_strength",
+        type=float,
+        default=0.0,
+        help="Latent fusion strength for semantic masks. 0 disables semantic conditioning.",
+    )
+    parser.add_argument(
+        "--semantic_dropout_p",
+        type=float,
+        default=0.0,
+        help="Randomly drop semantic mask per-sample during training to improve robustness.",
+    )
 
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -958,9 +1000,11 @@ def main():
         log_rgb_loss = 0.0
 
         for _ in range(len(train_dataloader_hypersim)):
+            dataset_source = "hypersim"
             if args.mix_dataset:
                 if random.random() < args.prob_hypersim:
                     batch = next(iter_hypersim)
+                    dataset_source = "hypersim"
                 else:
                     # Important note:
                     # In our training process, the Hypersim dataset is larger than the VKITTI dataset
@@ -970,15 +1014,40 @@ def main():
                     except StopIteration:
                         iter_vkitti = iter(train_dataloader_vkitti)
                         batch = next(iter_vkitti)
+                    dataset_source = "vkitti"
             else:
                 batch = next(iter_hypersim)
+                dataset_source = "hypersim"
 
             with accelerator.accumulate(unet):
+                semantic_mask_batch = None
+                if args.semantic_mask_strength > 0:
+                    mask_root = (
+                        args.semantic_mask_dir_hypersim
+                        if dataset_source == "hypersim"
+                        else args.semantic_mask_dir_vkitti
+                    )
+                    semantic_mask_batch = build_semantic_mask_batch(
+                        image_paths=batch["image_pathes"],
+                        mask_root=mask_root,
+                        target_hw=batch["pixel_values"].shape[-2:],
+                        device=accelerator.device,
+                    )
+                    if semantic_mask_batch is not None and args.semantic_dropout_p > 0:
+                        keep = (torch.rand(semantic_mask_batch.shape[0], 1, 1, 1, device=accelerator.device) > args.semantic_dropout_p).float()
+                        semantic_mask_batch = semantic_mask_batch * keep
+
                 # Convert images to latent space
                 rgb_latents = vae.encode(
                     torch.cat((batch["pixel_values"],batch["pixel_values"]), dim=0).to(weight_dtype)
                     ).latent_dist.sample()
                 rgb_latents = rgb_latents * vae.config.scaling_factor
+                if semantic_mask_batch is not None:
+                    sem_mask_2x = torch.cat((semantic_mask_batch, semantic_mask_batch), dim=0).to(weight_dtype)
+                    sem_rgb = sem_mask_2x.repeat(1, 3, 1, 1) * 2.0 - 1.0
+                    sem_latents = vae.encode(sem_rgb).latent_dist.sample()
+                    sem_latents = sem_latents * vae.config.scaling_factor
+                    rgb_latents = rgb_latents + args.semantic_mask_strength * sem_latents
 
                 # Convert target_annotations to latent space
                 assert len(args.task_name) == 1

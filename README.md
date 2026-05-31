@@ -117,11 +117,29 @@ pip install -r requirements.txt
 3. Run the training command! 🚀
     - `bash train_scripts/train_lotus_g_{$TASK}.sh` for training Lotus Generative models;
     - `bash train_scripts/train_lotus_d_{$TASK}.sh` for training Lotus Discriminative models.
+    - `bash train_scripts/train_lotus_d_depth_semantic.sh` for semantic-mask conditioned depth fine-tuning (latent fusion).
 
 ## 🕹️ Inference
 ### Testing on your images
 1. Place your images in a directory, for example, under `assets/in-the-wild_example` (where we have prepared several examples). 
 2. Run the inference command: `bash infer.sh`. 
+
+### Semantic-aware ROI fusion (thesis workflow)
+1. Prepare ROI masks with the same basename as input RGB files (`.png`, `.jpg`, or `.npy`).
+2. Run `bash infer_roi_fusion.sh`.
+3. Useful outputs:
+   - `depth/`: fused depth maps (`.npy`)
+   - `depth_global/`: baseline whole-image predictions (`.npy` + vis png)
+   - `depth_vis/`: fused visualization
+   - `roi_mask/`: effective ROI mask used for blending
+
+### Baseline and ablation helpers
+- Baseline + class-wise failure analysis:
+  - `python experiments/baseline_failure_analysis.py --help`
+- ROI-fusion weight sweep + optional ROI metrics:
+  - `python experiments/run_semantic_depth_ablation.py --help`
+- Thesis markdown report generation from experiment outputs:
+  - `python experiments/generate_thesis_report.py --help`
 
 ### Evaluation on benchmark datasets
 1. Prepare benchmark datasets:
