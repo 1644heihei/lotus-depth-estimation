@@ -12,6 +12,7 @@ from diffusers.utils import check_min_version
 
 from pipeline import LotusGPipeline, LotusDPipeline
 from utils.image_utils import colorize_depth_map
+from utils.semantic_fusion import enable_vae_early_fusion
 from utils.semantic_mask_utils import load_mask_for_image, mask_to_tensor
 from utils.seed_all import seed_all
 
@@ -101,6 +102,13 @@ def parse_args():
         default=0.0,
         help="Strength of semantic latent fusion in [0, +inf). 0 disables semantic conditioning.",
     )
+    parser.add_argument(
+        "--semantic_fusion_mode",
+        type=str,
+        default="auto",
+        choices=["auto", "latent", "early"],
+        help="Semantic conditioning mode: latent fusion or 4-channel early fusion.",
+    )
 
     args = parser.parse_args()
 
@@ -173,6 +181,10 @@ def main():
     logging.info(f"Successfully loading pipeline from {args.pretrained_model_name_or_path}.")
     logging.info(f"processing_res = {processing_res or pipeline.default_processing_resolution}")
 
+    if args.semantic_fusion_mode == "early" and pipeline.vae.encoder.conv_in.in_channels == 3:
+        logging.info("Enabling 4-channel VAE encoder for early fusion inference.")
+        enable_vae_early_fusion(pipeline.vae)
+
     pipeline = pipeline.to(device)
     pipeline.set_progress_bar_config(disable=True)
 
@@ -217,6 +229,7 @@ def main():
                     task_emb=task_emb,
                     semantic_mask=semantic_mask,
                     semantic_strength=args.semantic_strength,
+                    semantic_fusion_mode=args.semantic_fusion_mode,
                     processing_res=processing_res,
                     match_input_res=match_input_res,
                     resample_method=resample_method,

@@ -143,13 +143,23 @@ def get_hypersim_dataset_depth_normal(data_dir, resolution, random_flip, norm_ty
     }
     for root, dirs, files in os.walk(split_dir):
         for file in files:
-            if file.endswith("tonemap.jpg"): 
+            if file.endswith("tonemap.jpg"):
                 image_path = os.path.join(root, file)
                 depth_path = image_path.replace("final_preview", "geometry_hdf5").replace("tonemap.jpg", "depth_meters.hdf5")
                 normal_path = image_path.replace("final_preview", "geometry_hdf5").replace("tonemap.jpg", "normal_cam.hdf5")
                 data_dict["image"].append(image_path)
                 data_dict["depth"].append(depth_path)
                 data_dict["normal"].append(normal_path)
+            elif file.startswith("rgb_cam_") and file.endswith(".png"):
+                # Hugging Face "Hypersim-Processed" format.
+                image_path = os.path.join(root, file)
+                depth_file = file.replace("rgb_cam_", "depth_plane_cam_")
+                depth_path = os.path.join(root, depth_file)
+                if not os.path.isfile(depth_path):
+                    continue
+                data_dict["image"].append(image_path)
+                data_dict["depth"].append(depth_path)
+                data_dict["normal"].append(None)
     dataset = Dataset_hf.from_dict(data_dict)
     
     # define dataset transform
@@ -175,14 +185,41 @@ def get_hypersim_dataset_depth_normal(data_dir, resolution, random_flip, norm_ty
         depths = [] # List[np.array()]
         normals = [] # List[np.array()]
         for depth_file in examples[depth_column]:
-            # convert distance to depth
-            depth_fd = h5py.File(depth_file, 'r')
-            dist = np.array(depth_fd['dataset'])
-            depths.append(hypersim_distance_to_depth(dist))
-        for normal_file in examples[normal_colum]:
-            normal_fd = h5py.File(normal_file, 'r')
-            dist = np.array(normal_fd['dataset'])
-            normals.append(dist)
+            if depth_file.endswith(".hdf5"):
+                # Original Hypersim release stores camera-ray distance in meters.
+                depth_fd = h5py.File(depth_file, 'r')
+                dist = np.array(depth_fd['dataset'])
+                depth = hypersim_distance_to_depth(dist)
+            else:
+                # Processed mirrors usually store projective depth in png format.
+                depth = np.array(Image.open(depth_file))
+                if depth.dtype == np.uint16 and depth.max() > 1000:
+                    # Some mirrors store centimeters in uint16.
+                    depth = depth.astype(np.float32) / 100.0
+                else:
+                    depth = depth.astype(np.float32)
+            depth = np.clip(depth, 1e-4, None)
+            depths.append(depth)
+        for idx, normal_file in enumerate(examples[normal_colum]):
+            if normal_file is None or not os.path.isfile(normal_file):
+                # Depth-only mirrors: provide a neutral normal map.
+                h, w = depths[idx].shape[:2]
+                fallback_normal = np.zeros((h, w, 3), dtype=np.float32)
+                fallback_normal[..., 2] = 1.0
+                normals.append(fallback_normal)
+                continue
+
+            if normal_file.endswith(".hdf5"):
+                normal_fd = h5py.File(normal_file, 'r')
+                dist = np.array(normal_fd['dataset'])
+                normals.append(dist)
+            else:
+                normal = np.array(Image.open(normal_file)).astype(np.float32)
+                if normal.ndim == 2:
+                    normal = np.stack([normal, normal, normal], axis=-1)
+                if normal.max() > 1.0:
+                    normal = normal / 255.0 * 2.0 - 1.0
+                normals.append(normal)
         # transform image and annotation simutanueously. 
         examples["pixel_values"] = []
         examples["depth_values"] = []

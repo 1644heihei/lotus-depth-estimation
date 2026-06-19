@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from packaging import version
 from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection
 from utils.image_utils import resize_max_res, get_tv_resample_method, resize_back, get_pil_resample_method
+from utils.semantic_fusion import concat_rgb_and_mask
 from torchvision.transforms.functional import resize
 from torchvision.transforms import InterpolationMode
 
@@ -679,6 +680,26 @@ class DirectDiffusionPipeline(
         sem_latents = sem_latents * self.vae.config.scaling_factor
         return sem_latents
 
+    def resolve_semantic_fusion_mode(self, semantic_fusion_mode: str) -> str:
+        valid_modes = {"auto", "latent", "early"}
+        if semantic_fusion_mode not in valid_modes:
+            raise ValueError(
+                f"semantic_fusion_mode must be one of {sorted(valid_modes)}, got {semantic_fusion_mode}"
+            )
+
+        vae_in_channels = self.vae.encoder.conv_in.in_channels
+        if semantic_fusion_mode == "auto":
+            return "early" if vae_in_channels == 4 else "latent"
+
+        if semantic_fusion_mode == "latent" and vae_in_channels == 4:
+            logger.warning("VAE encoder expects 4-channel input. semantic_fusion_mode is forced to 'early'.")
+            return "early"
+
+        if semantic_fusion_mode == "early" and vae_in_channels != 4:
+            logger.warning("semantic_fusion_mode='early' requested but VAE encoder expects 3 channels. Falling back to 'latent'.")
+            return "latent"
+        return semantic_fusion_mode
+
     # Copied from diffusers.pipelines.latent_consistency_models.pipeline_latent_consistency_text2img.LatentConsistencyModelPipeline.get_guidance_scale_embedding
     def get_guidance_scale_embedding(
         self, w: torch.Tensor, embedding_dim: int = 512, dtype: torch.dtype = torch.float32
@@ -1048,6 +1069,7 @@ class LotusDPipeline(DirectDiffusionPipeline):
         rgb_in: Optional[torch.FloatTensor] = None,
         semantic_mask: Optional[torch.FloatTensor] = None,
         semantic_strength: float = 0.0,
+        semantic_fusion_mode: str = "auto",
         task_emb: Optional[torch.FloatTensor] = None,
         prompt: Union[str, List[str]] = None,
         timesteps: List[int] = None,
@@ -1121,8 +1143,8 @@ class LotusDPipeline(DirectDiffusionPipeline):
         # 0. Image processing
         input_size = rgb_in.shape
         assert (
-            4 == rgb_in.dim() and 3 == input_size[-3]
-        ), f"Wrong input shape {input_size}, expected [1, rgb, H, W]"
+            4 == rgb_in.dim() and input_size[-3] in (3, 4)
+        ), f"Wrong input shape {input_size}, expected [B, C, H, W] with C in [3,4]"
         # Resize image
         resample_method: InterpolationMode = get_tv_resample_method(resample_method)
         if processing_res > 0:
@@ -1147,9 +1169,14 @@ class LotusDPipeline(DirectDiffusionPipeline):
         timesteps = torch.tensor(timesteps, device=device).long()
 
         # 4. Prepare latent variables
-        rgb_latents = self.vae.encode(rgb_in.to(device)).latent_dist.sample()
+        resolved_fusion_mode = self.resolve_semantic_fusion_mode(semantic_fusion_mode)
+        rgb_for_vae = rgb_in
+        if resolved_fusion_mode == "early":
+            rgb_for_vae = concat_rgb_and_mask(rgb_in, semantic_mask)
+
+        rgb_latents = self.vae.encode(rgb_for_vae.to(device)).latent_dist.sample()
         rgb_latents = rgb_latents * self.vae.config.scaling_factor
-        if semantic_mask is not None and semantic_strength > 0:
+        if resolved_fusion_mode == "latent" and semantic_mask is not None and semantic_strength > 0:
             sem_latents = self.encode_semantic_mask_latents(
                 semantic_mask=semantic_mask,
                 target_hw=rgb_in.shape[-2:],
@@ -1208,6 +1235,7 @@ class LotusGPipeline(DirectDiffusionPipeline):
         rgb_in: Optional[torch.FloatTensor] = None, # Modification 240430
         semantic_mask: Optional[torch.FloatTensor] = None,
         semantic_strength: float = 0.0,
+        semantic_fusion_mode: str = "auto",
         task_emb: Optional[torch.FloatTensor] = None, 
         prompt: Union[str, List[str]] = None,
         num_inference_steps: int = 50,
@@ -1290,8 +1318,8 @@ class LotusGPipeline(DirectDiffusionPipeline):
         # 0. Image processing
         input_size = rgb_in.shape
         assert (
-            4 == rgb_in.dim() and 3 == input_size[-3]
-        ), f"Wrong input shape {input_size}, expected [1, rgb, H, W]"
+            4 == rgb_in.dim() and input_size[-3] in (3, 4)
+        ), f"Wrong input shape {input_size}, expected [B, C, H, W] with C in [3,4]"
         # Resize image
         resample_method: InterpolationMode = get_tv_resample_method(resample_method)
         if processing_res > 0:
@@ -1333,9 +1361,14 @@ class LotusGPipeline(DirectDiffusionPipeline):
             latents,
         )
         
-        rgb_latents = self.vae.encode(rgb_in.to(device)).latent_dist.sample()
+        resolved_fusion_mode = self.resolve_semantic_fusion_mode(semantic_fusion_mode)
+        rgb_for_vae = rgb_in
+        if resolved_fusion_mode == "early":
+            rgb_for_vae = concat_rgb_and_mask(rgb_in, semantic_mask)
+
+        rgb_latents = self.vae.encode(rgb_for_vae.to(device)).latent_dist.sample()
         rgb_latents = rgb_latents * self.vae.config.scaling_factor
-        if semantic_mask is not None and semantic_strength > 0:
+        if resolved_fusion_mode == "latent" and semantic_mask is not None and semantic_strength > 0:
             sem_latents = self.encode_semantic_mask_latents(
                 semantic_mask=semantic_mask,
                 target_hw=rgb_in.shape[-2:],

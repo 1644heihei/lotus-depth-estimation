@@ -55,6 +55,7 @@ from diffusers.utils.torch_utils import is_compiled_module
 from pipeline import LotusDPipeline
 from utils.image_utils import concatenate_images, colorize_depth_map
 from utils.hypersim_dataset import get_hypersim_dataset_depth_normal
+from utils.semantic_fusion import append_constant_channel, concat_rgb_and_mask, enable_vae_early_fusion
 from utils.semantic_mask_utils import load_mask_for_image
 from utils.vkitti_dataset import VKITTIDataset, VKITTITransform, collate_fn_vkitti
 
@@ -638,6 +639,13 @@ def parse_args():
         default=0.0,
         help="Randomly drop semantic mask per-sample during training to improve robustness.",
     )
+    parser.add_argument(
+        "--semantic_fusion_mode",
+        type=str,
+        default="latent",
+        choices=["latent", "early"],
+        help="Use latent fusion or 4-channel early fusion for semantic conditioning.",
+    )
 
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -751,6 +759,13 @@ def main():
             args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
         )
 
+    if args.semantic_fusion_mode == "early":
+        changed = enable_vae_early_fusion(vae)
+        if changed:
+            logger.info("Enabled 4-channel VAE encoder for semantic early fusion training.")
+        if args.semantic_mask_strength > 0:
+            logger.warning("semantic_mask_strength is ignored in early fusion mode.")
+
     unet = UNet2DConditionModel.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.non_ema_revision,
         class_embed_type="projection", projection_class_embeddings_input_dim=4, # Important! new projection layer will be initailized.
@@ -857,16 +872,33 @@ def main():
         pin_memory=True
     )
     # -------------------- Dataset2: VKITTI --------------------
-    transform_vkitti = VKITTITransform(random_flip=args.random_flip)
-    train_dataset_vkitti = VKITTIDataset(args.train_data_dir_vkitti, transform_vkitti, args.norm_type, truncnorm_min=args.truncnorm_min)
-    train_dataloader_vkitti = torch.utils.data.DataLoader(
-        train_dataset_vkitti, 
-        shuffle=True,
-        collate_fn=collate_fn_vkitti,
-        batch_size=args.train_batch_size, 
-        num_workers=args.dataloader_num_workers,
-        pin_memory=True
+    has_vkitti = args.train_data_dir_vkitti is not None and os.path.isdir(args.train_data_dir_vkitti)
+    if args.mix_dataset and not has_vkitti:
+        logger.warning(
+            "mix_dataset is enabled but VKITTI path is missing: %s. Fallback to Hypersim-only training.",
+            args.train_data_dir_vkitti,
         )
+        args.mix_dataset = False
+
+    if has_vkitti:
+        transform_vkitti = VKITTITransform(random_flip=args.random_flip)
+        train_dataset_vkitti = VKITTIDataset(
+            args.train_data_dir_vkitti,
+            transform_vkitti,
+            args.norm_type,
+            truncnorm_min=args.truncnorm_min,
+        )
+        train_dataloader_vkitti = torch.utils.data.DataLoader(
+            train_dataset_vkitti,
+            shuffle=True,
+            collate_fn=collate_fn_vkitti,
+            batch_size=args.train_batch_size,
+            num_workers=args.dataloader_num_workers,
+            pin_memory=True,
+        )
+    else:
+        train_dataset_vkitti = None
+        train_dataloader_vkitti = train_dataloader_hypersim
     
     # Lr_scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -927,7 +959,7 @@ def main():
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples Hypersim = {len(train_dataset_hypersim)}")
-    logger.info(f"  Num examples VKITTI = {len(train_dataset_vkitti)}")
+    logger.info(f"  Num examples VKITTI = {len(train_dataset_vkitti) if train_dataset_vkitti is not None else 0}")
     logger.info(f"  Using mix datasets: {args.mix_dataset}")
     logger.info(f"  Dataset alternation probability of Hypersim = {args.prob_hypersim}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
@@ -993,7 +1025,7 @@ def main():
 
     for epoch in range(first_epoch, args.num_train_epochs):
         iter_hypersim = iter(train_dataloader_hypersim)
-        iter_vkitti = iter(train_dataloader_vkitti)
+        iter_vkitti = iter(train_dataloader_vkitti) if args.mix_dataset else None
 
         train_loss = 0.0
         log_ann_loss = 0.0
@@ -1021,7 +1053,8 @@ def main():
 
             with accelerator.accumulate(unet):
                 semantic_mask_batch = None
-                if args.semantic_mask_strength > 0:
+                use_semantic_input = args.semantic_fusion_mode == "early" or args.semantic_mask_strength > 0
+                if use_semantic_input:
                     mask_root = (
                         args.semantic_mask_dir_hypersim
                         if dataset_source == "hypersim"
@@ -1038,11 +1071,18 @@ def main():
                         semantic_mask_batch = semantic_mask_batch * keep
 
                 # Convert images to latent space
+                rgb_input_for_vae = torch.cat((batch["pixel_values"], batch["pixel_values"]), dim=0).to(weight_dtype)
+                if args.semantic_fusion_mode == "early":
+                    sem_mask_2x = None
+                    if semantic_mask_batch is not None:
+                        sem_mask_2x = torch.cat((semantic_mask_batch, semantic_mask_batch), dim=0).to(weight_dtype)
+                    rgb_input_for_vae = concat_rgb_and_mask(rgb_input_for_vae, sem_mask_2x)
+
                 rgb_latents = vae.encode(
-                    torch.cat((batch["pixel_values"],batch["pixel_values"]), dim=0).to(weight_dtype)
+                    rgb_input_for_vae
                     ).latent_dist.sample()
                 rgb_latents = rgb_latents * vae.config.scaling_factor
-                if semantic_mask_batch is not None:
+                if args.semantic_fusion_mode == "latent" and semantic_mask_batch is not None:
                     sem_mask_2x = torch.cat((semantic_mask_batch, semantic_mask_batch), dim=0).to(weight_dtype)
                     sem_rgb = sem_mask_2x.repeat(1, 3, 1, 1) * 2.0 - 1.0
                     sem_latents = vae.encode(sem_rgb).latent_dist.sample()
@@ -1058,9 +1098,10 @@ def main():
                 else:
                     raise ValueError(f"Do not support {args.task_name[0]} yet. ")
                 
-                target_latents = vae.encode(
-                    torch.cat((batch[TAR_ANNO],batch["pixel_values"]), dim=0).to(weight_dtype)
-                    ).latent_dist.sample()
+                target_concat = torch.cat((batch[TAR_ANNO], batch["pixel_values"]), dim=0).to(weight_dtype)
+                if args.semantic_fusion_mode == "early":
+                    target_concat = append_constant_channel(target_concat, value=0.0)
+                target_latents = vae.encode(target_concat).latent_dist.sample()
                 target_latents = target_latents * vae.config.scaling_factor
                 
                 bsz = target_latents.shape[0]

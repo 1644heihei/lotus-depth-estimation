@@ -1,18 +1,20 @@
 export MODEL_NAME="stabilityai/stable-diffusion-2-base"
+export ACCELERATE_CONFIG=${ACCELERATE_CONFIG:-"accelerate_configs/01234567.yaml"}
 
 # training dataset
-export TRAIN_DATA_DIR_HYPERSIM=$PATH_TO_HYPERSIM_DATA
-export TRAIN_DATA_DIR_VKITTI=$PATH_TO_VKITTI_DATA
+export TRAIN_DATA_DIR_HYPERSIM=${PATH_TO_HYPERSIM_DATA:-"data/hypersim_processed"}
+export TRAIN_DATA_DIR_VKITTI=${PATH_TO_VKITTI_DATA:-"data/vkitti_processed"}
 export RES_HYPERSIM=576
 export RES_VKITTI=375
-export P_HYPERSIM=0.9
+export P_HYPERSIM=1.0
 export NORMTYPE="trunc_disparity"
 
 # semantic masks (same basename as RGB image)
-export SEM_MASK_DIR_HYPERSIM=$PATH_TO_HYPERSIM_SEM_MASKS
-export SEM_MASK_DIR_VKITTI=$PATH_TO_VKITTI_SEM_MASKS
-export SEM_STRENGTH=0.25
+export SEM_MASK_DIR_HYPERSIM=${PATH_TO_HYPERSIM_SEM_MASKS:-"data/hypersim_sem_masks"}
+export SEM_MASK_DIR_VKITTI=${PATH_TO_VKITTI_SEM_MASKS:-"data/vkitti_sem_masks"}
+export SEM_STRENGTH=0.0
 export SEM_DROPOUT=0.2
+export SEM_FUSION_MODE="early"
 
 # training configs
 export BATCH_SIZE=8
@@ -32,7 +34,7 @@ export VAL_STEP=500
 # output dir
 export OUTPUT_DIR="output/train-lotus-d-${TASK_NAME}-semantic-bsz${TOTAL_BSZ}/"
 
-accelerate launch --config_file=accelerate_configs/$CUDA.yaml --mixed_precision="fp16" \
+accelerate launch --config_file=$ACCELERATE_CONFIG --mixed_precision="fp16" \
   --main_process_port="13324" \
   train_lotus_d.py \
   --pretrained_model_name_or_path=$MODEL_NAME \
@@ -41,7 +43,6 @@ accelerate launch --config_file=accelerate_configs/$CUDA.yaml --mixed_precision=
   --train_data_dir_vkitti=$TRAIN_DATA_DIR_VKITTI \
   --resolution_vkitti=$RES_VKITTI \
   --prob_hypersim=$P_HYPERSIM \
-  --mix_dataset \
   --random_flip \
   --norm_type=$NORMTYPE \
   --dataloader_num_workers=0 \
@@ -64,4 +65,5 @@ accelerate launch --config_file=accelerate_configs/$CUDA.yaml --mixed_precision=
   --semantic_mask_dir_vkitti=$SEM_MASK_DIR_VKITTI \
   --semantic_mask_strength=$SEM_STRENGTH \
   --semantic_dropout_p=$SEM_DROPOUT \
+  --semantic_fusion_mode=$SEM_FUSION_MODE \
   --resume_from_checkpoint="latest"
