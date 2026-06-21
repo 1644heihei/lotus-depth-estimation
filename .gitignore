@@ -6,4 +6,5 @@ output/Depth_G_Infer/*
 venv/
 .venv/
 .vscode/
+data/
 
