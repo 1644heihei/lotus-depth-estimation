@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 import random
 from torchvision import transforms
+from huggingface_hub import HfApi, hf_hub_download
 
 def hypersim_distance_to_depth(npyDistance):
     intWidth=1024
@@ -134,6 +135,17 @@ class HypersimImageDepthNormalTransform:
         return image, depth, normal
 
 def get_hypersim_dataset_depth_normal(data_dir, resolution, random_flip, norm_type, truncnorm_min, align_cam_normal=False, split='train'):
+    if data_dir.startswith("hf://"):
+        return get_hypersim_dataset_depth_from_hf(
+            data_uri=data_dir,
+            resolution=resolution,
+            random_flip=random_flip,
+            norm_type=norm_type,
+            truncnorm_min=truncnorm_min,
+            align_cam_normal=align_cam_normal,
+            split=split,
+        )
+
     split_dir = os.path.join(data_dir, split)
     # load data and construct the dataset
     data_dict = {
@@ -259,4 +271,154 @@ def get_hypersim_dataset_depth_normal(data_dir, resolution, random_flip, norm_ty
 
         return example_dict
     
+    return dataset, preprocess_hypersim, collate_fn_hypersim
+
+
+class HypersimHFDataset(torch.utils.data.Dataset):
+    """
+    On-demand Hypersim dataset backed by Hugging Face Hub.
+    Files are pulled lazily and cached in the local HF cache directory.
+    """
+
+    def __init__(self, repo_id, split, transform, max_pairs=0, scene_prefixes=None):
+        self.repo_id = repo_id
+        self.split = split
+        self.transform = transform
+        self.scene_prefixes = scene_prefixes or []
+        self.max_pairs = max_pairs
+        self.api = HfApi()
+        self.items = self._build_items()
+
+    def _build_items(self):
+        files = self.api.list_repo_files(repo_id=self.repo_id, repo_type="dataset")
+        depth_files = set(
+            f for f in files if f.startswith(f"{self.split}/") and "/depth_plane_cam_" in f and f.endswith(".png")
+        )
+        items = []
+        for rgb_file in files:
+            if not (rgb_file.startswith(f"{self.split}/") and "/rgb_cam_" in rgb_file and rgb_file.endswith(".png")):
+                continue
+            scene = rgb_file.split("/")[1] if len(rgb_file.split("/")) > 2 else ""
+            if self.scene_prefixes and not any(scene.startswith(prefix) for prefix in self.scene_prefixes):
+                continue
+            depth_file = rgb_file.replace("/rgb_cam_", "/depth_plane_cam_")
+            if depth_file in depth_files:
+                items.append((rgb_file, depth_file))
+        items.sort()
+        if self.max_pairs and self.max_pairs > 0:
+            items = items[: self.max_pairs]
+        return items
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, idx):
+        rgb_file, depth_file = self.items[idx]
+        image_path = hf_hub_download(repo_id=self.repo_id, repo_type="dataset", filename=rgb_file)
+        depth_path = hf_hub_download(repo_id=self.repo_id, repo_type="dataset", filename=depth_file)
+
+        image = Image.open(image_path).convert("RGB")
+        depth = np.array(Image.open(depth_path))
+        if depth.dtype == np.uint16 and depth.max() > 1000:
+            depth = depth.astype(np.float32) / 100.0
+        else:
+            depth = depth.astype(np.float32)
+        depth = np.clip(depth, 1e-4, None)
+
+        h, w = depth.shape[:2]
+        fallback_normal = np.zeros((h, w, 3), dtype=np.float32)
+        fallback_normal[..., 2] = 1.0
+        pixel_values, depth_values, normal_values = self.transform(image, depth, fallback_normal)
+
+        return {
+            "pixel_values": pixel_values,
+            "depth_values": depth_values,
+            "normal_values": normal_values,
+            "image_pathes": f"hf://{self.repo_id}/{rgb_file}",
+            "depth_paths": f"hf://{self.repo_id}/{depth_file}",
+            "normal_paths": None,
+        }
+
+
+def get_hypersim_dataset_depth_from_hf(data_uri, resolution, random_flip, norm_type, truncnorm_min, align_cam_normal=False, split="train"):
+    """
+    data_uri format:
+      hf://<repo_id>/<split>
+      hf://<repo_id>/<split>?max_pairs=2000&scene_prefix=ai_001,ai_002
+    """
+    uri = data_uri[len("hf://") :]
+    query = ""
+    if "?" in uri:
+        uri, query = uri.split("?", 1)
+
+    # repo_id can contain exactly one '/'.
+    uri_parts = uri.split("/")
+    if len(uri_parts) < 3:
+        raise ValueError("HF data uri must be like hf://owner/repo/split")
+    repo_id = f"{uri_parts[0]}/{uri_parts[1]}"
+    split_from_uri = uri_parts[2]
+    split = split_from_uri or split
+
+    max_pairs = 0
+    scene_prefixes = []
+    if query:
+        for kv in query.split("&"):
+            if "=" not in kv:
+                continue
+            k, v = kv.split("=", 1)
+            if k == "max_pairs" and v.isdigit():
+                max_pairs = int(v)
+            elif k == "scene_prefix":
+                scene_prefixes = [x.strip() for x in v.split(",") if x.strip()]
+
+    # infer output size from one sample
+    tmp_api = HfApi()
+    files = tmp_api.list_repo_files(repo_id=repo_id, repo_type="dataset")
+    rgb_candidates = [f for f in files if f.startswith(f"{split}/") and "/rgb_cam_" in f and f.endswith(".png")]
+    if not rgb_candidates:
+        raise ValueError(f"No RGB files found in {repo_id}:{split}")
+    sample_path = hf_hub_download(repo_id=repo_id, repo_type="dataset", filename=rgb_candidates[0])
+    w, h = Image.open(sample_path).size
+    if h > w:
+        new_w = resolution
+        new_h = int(resolution * h / w)
+    else:
+        new_h = resolution
+        new_w = int(resolution * w / h)
+    transform = HypersimImageDepthNormalTransform((new_h, new_w), random_flip, norm_type, truncnorm_min, align_cam_normal)
+    dataset = HypersimHFDataset(
+        repo_id=repo_id,
+        split=split,
+        transform=transform,
+        max_pairs=max_pairs,
+        scene_prefixes=scene_prefixes,
+    )
+
+    def preprocess_hypersim(examples):
+        # no-op because items are transformed in __getitem__
+        return examples
+
+    def collate_fn_hypersim(examples):
+        pixel_values = torch.stack([example["pixel_values"] for example in examples])
+        pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
+
+        depth_values = torch.stack([example["depth_values"] for example in examples])
+        depth_values = depth_values.to(memory_format=torch.contiguous_format).float()
+
+        normal_values = torch.stack([example["normal_values"] for example in examples])
+        normal_values = normal_values.to(memory_format=torch.contiguous_format).float()
+
+        image_paths = [example["image_pathes"] for example in examples]
+        depth_paths = [example["depth_paths"] for example in examples]
+        normal_paths = [example["normal_paths"] for example in examples]
+
+        return {
+            "pixel_values": pixel_values,
+            "depth_values": depth_values,
+            "normal_values": normal_values,
+            "image_pathes": image_paths,
+            "depth_paths": depth_paths,
+            "normal_paths": normal_paths,
+        }
+
     return dataset, preprocess_hypersim, collate_fn_hypersim

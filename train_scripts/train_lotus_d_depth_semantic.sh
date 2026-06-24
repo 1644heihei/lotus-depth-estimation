@@ -1,5 +1,6 @@
-export MODEL_NAME="stabilityai/stable-diffusion-2-base"
+export MODEL_NAME=${MODEL_NAME:-"runwayml/stable-diffusion-v1-5"}
 export ACCELERATE_CONFIG=${ACCELERATE_CONFIG:-"accelerate_configs/01234567.yaml"}
+export USE_LIBUV=0
 
 # training dataset
 export TRAIN_DATA_DIR_HYPERSIM=${PATH_TO_HYPERSIM_DATA:-"data/hypersim_processed"}
@@ -15,6 +16,16 @@ export SEM_MASK_DIR_VKITTI=${PATH_TO_VKITTI_SEM_MASKS:-"data/vkitti_sem_masks"}
 export SEM_STRENGTH=0.0
 export SEM_DROPOUT=0.2
 export SEM_FUSION_MODE="early"
+
+# optional: fetch only the required subset from HF before training
+export HF_PREPARE_ON_DEMAND=${HF_PREPARE_ON_DEMAND:-0}
+export HF_DATASET_REPO=${HF_DATASET_REPO:-"omrastogi/Hypersim-Processed"}
+export HF_DATASET_SPLIT=${HF_DATASET_SPLIT:-"train"}
+export HF_MAX_PAIRS=${HF_MAX_PAIRS:-0}
+export HF_MAX_SCENES=${HF_MAX_SCENES:-0}
+export HF_SCENE_PREFIX=${HF_SCENE_PREFIX:-""}
+export HF_SLEEP_SEC=${HF_SLEEP_SEC:-0.0}
+export HF_STREAMING_CACHE_MODE=${HF_STREAMING_CACHE_MODE:-0}
 
 # training configs
 export BATCH_SIZE=8
@@ -34,7 +45,27 @@ export VAL_STEP=500
 # output dir
 export OUTPUT_DIR="output/train-lotus-d-${TASK_NAME}-semantic-bsz${TOTAL_BSZ}/"
 
-accelerate launch --config_file=$ACCELERATE_CONFIG --mixed_precision="fp16" \
+if [ "$HF_PREPARE_ON_DEMAND" = "1" ]; then
+  echo "[train] Preparing subset from HF: repo=${HF_DATASET_REPO} split=${HF_DATASET_SPLIT} max_pairs=${HF_MAX_PAIRS}"
+  python utils/prepare_hf_data.py \
+    --repo_id="$HF_DATASET_REPO" \
+    --split="$HF_DATASET_SPLIT" \
+    --output_dir="$TRAIN_DATA_DIR_HYPERSIM" \
+    --max_pairs="$HF_MAX_PAIRS" \
+    --max_scenes="$HF_MAX_SCENES" \
+    --scene_prefix="$HF_SCENE_PREFIX" \
+    --sleep_sec="$HF_SLEEP_SEC"
+fi
+
+if [ "$HF_STREAMING_CACHE_MODE" = "1" ]; then
+  TRAIN_DATA_DIR_HYPERSIM="hf://${HF_DATASET_REPO}/${HF_DATASET_SPLIT}?max_pairs=${HF_MAX_PAIRS}&scene_prefix=${HF_SCENE_PREFIX}"
+  echo "[train] Using HF on-demand cache mode: ${TRAIN_DATA_DIR_HYPERSIM}"
+fi
+
+accelerate launch --mixed_precision="fp16" \
+  --num_processes=1 \
+  --num_machines=1 \
+  --gpu_ids=$CUDA \
   --main_process_port="13324" \
   train_lotus_d.py \
   --pretrained_model_name_or_path=$MODEL_NAME \

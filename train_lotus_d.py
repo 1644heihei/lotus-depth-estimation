@@ -859,9 +859,13 @@ def main():
         )
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
-            train_hypersim_dataset = train_hypersim_dataset.shuffle(seed=args.seed).select(range(args.max_train_samples))
-        # Set the training transforms
-        train_dataset_hypersim = train_hypersim_dataset.with_transform(preprocess_train_hypersim)
+            if hasattr(train_hypersim_dataset, "shuffle") and hasattr(train_hypersim_dataset, "select"):
+                train_hypersim_dataset = train_hypersim_dataset.shuffle(seed=args.seed).select(range(args.max_train_samples))
+        # Set the training transforms for HF Arrow datasets; map-style custom datasets are already transformed in __getitem__.
+        if hasattr(train_hypersim_dataset, "with_transform"):
+            train_dataset_hypersim = train_hypersim_dataset.with_transform(preprocess_train_hypersim)
+        else:
+            train_dataset_hypersim = train_hypersim_dataset
     
     train_dataloader_hypersim = torch.utils.data.DataLoader(
         train_dataset_hypersim,
@@ -872,7 +876,11 @@ def main():
         pin_memory=True
     )
     # -------------------- Dataset2: VKITTI --------------------
-    has_vkitti = args.train_data_dir_vkitti is not None and os.path.isdir(args.train_data_dir_vkitti)
+    has_vkitti = False
+    if args.train_data_dir_vkitti is not None and os.path.isdir(args.train_data_dir_vkitti):
+        # Require at least one canonical VKITTI scene folder to avoid treating an empty placeholder directory as valid data.
+        vkitti_scene_markers = [d for d in ("Scene01", "Scene02", "Scene06", "Scene18", "Scene20") if os.path.isdir(os.path.join(args.train_data_dir_vkitti, d))]
+        has_vkitti = len(vkitti_scene_markers) > 0
     if args.mix_dataset and not has_vkitti:
         logger.warning(
             "mix_dataset is enabled but VKITTI path is missing: %s. Fallback to Hypersim-only training.",
