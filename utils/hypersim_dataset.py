@@ -7,7 +7,9 @@ import torch
 import torch.nn.functional as F
 import random
 from torchvision import transforms
-from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub import hf_hub_download
+
+from utils.hypersim_hf_index import collect_hypersim_rgb_depth_pairs
 
 def hypersim_distance_to_depth(npyDistance):
     intWidth=1024
@@ -286,28 +288,12 @@ class HypersimHFDataset(torch.utils.data.Dataset):
         self.transform = transform
         self.scene_prefixes = scene_prefixes or []
         self.max_pairs = max_pairs
-        self.api = HfApi()
-        self.items = self._build_items()
-
-    def _build_items(self):
-        files = self.api.list_repo_files(repo_id=self.repo_id, repo_type="dataset")
-        depth_files = set(
-            f for f in files if f.startswith(f"{self.split}/") and "/depth_plane_cam_" in f and f.endswith(".png")
+        self.items = collect_hypersim_rgb_depth_pairs(
+            repo_id=self.repo_id,
+            split=self.split,
+            max_pairs=self.max_pairs,
+            scene_prefixes=self.scene_prefixes,
         )
-        items = []
-        for rgb_file in files:
-            if not (rgb_file.startswith(f"{self.split}/") and "/rgb_cam_" in rgb_file and rgb_file.endswith(".png")):
-                continue
-            scene = rgb_file.split("/")[1] if len(rgb_file.split("/")) > 2 else ""
-            if self.scene_prefixes and not any(scene.startswith(prefix) for prefix in self.scene_prefixes):
-                continue
-            depth_file = rgb_file.replace("/rgb_cam_", "/depth_plane_cam_")
-            if depth_file in depth_files:
-                items.append((rgb_file, depth_file))
-        items.sort()
-        if self.max_pairs and self.max_pairs > 0:
-            items = items[: self.max_pairs]
-        return items
 
     def __len__(self):
         return len(self.items)
@@ -371,13 +357,13 @@ def get_hypersim_dataset_depth_from_hf(data_uri, resolution, random_flip, norm_t
             elif k == "scene_prefix":
                 scene_prefixes = [x.strip() for x in v.split(",") if x.strip()]
 
-    # infer output size from one sample
-    tmp_api = HfApi()
-    files = tmp_api.list_repo_files(repo_id=repo_id, repo_type="dataset")
-    rgb_candidates = [f for f in files if f.startswith(f"{split}/") and "/rgb_cam_" in f and f.endswith(".png")]
-    if not rgb_candidates:
-        raise ValueError(f"No RGB files found in {repo_id}:{split}")
-    sample_path = hf_hub_download(repo_id=repo_id, repo_type="dataset", filename=rgb_candidates[0])
+    pairs = collect_hypersim_rgb_depth_pairs(
+        repo_id=repo_id,
+        split=split,
+        max_pairs=max_pairs,
+        scene_prefixes=scene_prefixes,
+    )
+    sample_path = hf_hub_download(repo_id=repo_id, repo_type="dataset", filename=pairs[0][0])
     w, h = Image.open(sample_path).size
     if h > w:
         new_w = resolution
@@ -393,6 +379,8 @@ def get_hypersim_dataset_depth_from_hf(data_uri, resolution, random_flip, norm_t
         max_pairs=max_pairs,
         scene_prefixes=scene_prefixes,
     )
+    # Reuse pairs resolved above; avoid a second index lookup in __init__.
+    dataset.items = pairs
 
     def preprocess_hypersim(examples):
         # no-op because items are transformed in __getitem__

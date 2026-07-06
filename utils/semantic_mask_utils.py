@@ -12,8 +12,26 @@ from PIL import Image
 _MASK_EXTS: Sequence[str] = (".png", ".jpg", ".jpeg", ".bmp", ".npy")
 
 
+def mask_relpath_for_image(image_path: str, ext: str = ".png") -> Path:
+    """Map an RGB path to a mask relative path under mask_root."""
+    p = Path(image_path)
+    for split in ("train", "val", "test"):
+        if split in p.parts:
+            idx = p.parts.index(split)
+            return Path(*p.parts[idx:]).with_suffix(ext)
+    return Path(p.parent.name) / f"{p.stem}{ext}"
+
+
+def mask_path_for_image(image_path: str, mask_root: str, ext: str = ".png") -> str:
+    return str(Path(mask_root) / mask_relpath_for_image(image_path, ext=ext))
+
+
 def resolve_mask_path(image_path: str, mask_root: str) -> Optional[str]:
-    """Resolve a mask file path by image basename (without extension)."""
+    """Resolve mask file: prefer mirrored train/scene layout, then flat basename."""
+    for ext in _MASK_EXTS:
+        mirrored = mask_path_for_image(image_path, mask_root, ext=ext)
+        if os.path.exists(mirrored):
+            return mirrored
     stem = Path(image_path).stem
     for ext in _MASK_EXTS:
         candidate = os.path.join(mask_root, f"{stem}{ext}")

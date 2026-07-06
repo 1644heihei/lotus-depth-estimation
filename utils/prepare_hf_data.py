@@ -1,9 +1,16 @@
 import argparse
+import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from huggingface_hub import HfApi, hf_hub_download
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from huggingface_hub import hf_hub_download
+
+from utils.hypersim_hf_index import collect_hypersim_rgb_depth_pairs
 
 
 def parse_args():
@@ -122,12 +129,13 @@ def main():
         f"max_scenes={args.max_scenes or 'all'} scene_prefixes={scene_prefixes or 'all'}"
     )
 
-    pairs = collect_pairs(
+    pairs = collect_hypersim_rgb_depth_pairs(
         repo_id=args.repo_id,
         split=args.split,
         max_pairs=args.max_pairs,
         max_scenes=args.max_scenes,
         scene_prefixes=scene_prefixes,
+        use_cache=True,
     )
     print(f"[prepare_hf_data] selected_pairs={len(pairs)}")
 
