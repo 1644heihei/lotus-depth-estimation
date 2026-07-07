@@ -12,8 +12,6 @@ from diffusers.utils import check_min_version
 
 from pipeline import LotusGPipeline, LotusDPipeline
 from utils.image_utils import colorize_depth_map
-from utils.semantic_fusion import enable_vae_early_fusion
-from utils.semantic_mask_utils import load_mask_for_image, mask_to_tensor
 from utils.seed_all import seed_all
 
 check_min_version('0.28.0.dev0')
@@ -90,25 +88,6 @@ def parse_args():
         default="bilinear",
         help="Resampling method used to resize images and depth predictions. This can be one of `bilinear`, `bicubic` or `nearest`. Default: `bilinear`",
     )
-    parser.add_argument(
-        "--semantic_mask_dir",
-        type=str,
-        default=None,
-        help="Optional directory containing per-image semantic masks for conditioning.",
-    )
-    parser.add_argument(
-        "--semantic_strength",
-        type=float,
-        default=0.0,
-        help="Strength of semantic latent fusion in [0, +inf). 0 disables semantic conditioning.",
-    )
-    parser.add_argument(
-        "--semantic_fusion_mode",
-        type=str,
-        default="auto",
-        choices=["auto", "latent", "early"],
-        help="Semantic conditioning mode: latent fusion or 4-channel early fusion.",
-    )
 
     args = parser.parse_args()
 
@@ -181,10 +160,6 @@ def main():
     logging.info(f"Successfully loading pipeline from {args.pretrained_model_name_or_path}.")
     logging.info(f"processing_res = {processing_res or pipeline.default_processing_resolution}")
 
-    if args.semantic_fusion_mode == "early" and pipeline.vae.encoder.conv_in.in_channels == 3:
-        logging.info("Enabling 4-channel VAE encoder for early fusion inference.")
-        enable_vae_early_fusion(pipeline.vae)
-
     pipeline = pipeline.to(device)
     pipeline.set_progress_bar_config(disable=True)
 
@@ -211,9 +186,6 @@ def main():
                 test_image = test_image / 127.5 - 1.0 
                 test_image = test_image.to(device)
 
-                semantic_mask_np = load_mask_for_image(str(test_images[i]), args.semantic_mask_dir)
-                semantic_mask = mask_to_tensor(semantic_mask_np, device=device) if semantic_mask_np is not None else None
-
                 task_emb = torch.tensor([1, 0]).float().unsqueeze(0).repeat(1, 1).to(device)
                 task_emb = torch.cat([torch.sin(task_emb), torch.cos(task_emb)], dim=-1).repeat(1, 1)
 
@@ -227,9 +199,6 @@ def main():
                     output_type='np',
                     timesteps=[args.timestep],
                     task_emb=task_emb,
-                    semantic_mask=semantic_mask,
-                    semantic_strength=args.semantic_strength,
-                    semantic_fusion_mode=args.semantic_fusion_mode,
                     processing_res=processing_res,
                     match_input_res=match_input_res,
                     resample_method=resample_method,

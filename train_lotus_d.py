@@ -28,7 +28,6 @@ from glob import glob
 import accelerate
 import datasets
 import numpy as np
-import cv2
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
@@ -55,8 +54,6 @@ from diffusers.utils.torch_utils import is_compiled_module
 from pipeline import LotusDPipeline
 from utils.image_utils import concatenate_images, colorize_depth_map
 from utils.hypersim_dataset import get_hypersim_dataset_depth_normal
-from utils.semantic_fusion import append_constant_channel, concat_rgb_and_mask, enable_vae_early_fusion
-from utils.semantic_mask_utils import load_mask_for_image
 from utils.vkitti_dataset import VKITTIDataset, VKITTITransform, collate_fn_vkitti
 
 from eval import evaluation_depth, evaluation_normal
@@ -70,22 +67,6 @@ logger = get_logger(__name__, log_level="INFO")
 
 TOP5_STEPS_DEPTH = []
 TOP5_STEPS_NORMAL = []
-
-
-def build_semantic_mask_batch(image_paths, mask_root, target_hw, device):
-    if not mask_root:
-        return None
-    h, w = target_hw
-    mask_list = []
-    for image_path in image_paths:
-        mask_np = load_mask_for_image(image_path, mask_root)
-        if mask_np is None:
-            mask_np = np.zeros((h, w), dtype=np.float32)
-        else:
-            mask_np = cv2.resize(mask_np.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
-        mask_t = torch.from_numpy(mask_np).float().unsqueeze(0)
-        mask_list.append(mask_t)
-    return torch.stack(mask_list, dim=0).to(device)
 
 def run_example_validation(pipeline, task, args, step, accelerator, generator):
     validation_images = glob(os.path.join(args.validation_images, "*.jpg")) + glob(os.path.join(args.validation_images, "*.png"))
@@ -615,37 +596,6 @@ def parse_args():
             " more information see https://huggingface.co/docs/accelerate/v0.17.0/en/package_reference/accelerator#accelerate.Accelerator"
         ),
     )
-    parser.add_argument(
-        "--semantic_mask_dir_hypersim",
-        type=str,
-        default=None,
-        help="Optional mask directory for Hypersim images (same basename as RGB).",
-    )
-    parser.add_argument(
-        "--semantic_mask_dir_vkitti",
-        type=str,
-        default=None,
-        help="Optional mask directory for VKITTI images (same basename as RGB).",
-    )
-    parser.add_argument(
-        "--semantic_mask_strength",
-        type=float,
-        default=0.0,
-        help="Latent fusion strength for semantic masks. 0 disables semantic conditioning.",
-    )
-    parser.add_argument(
-        "--semantic_dropout_p",
-        type=float,
-        default=0.0,
-        help="Randomly drop semantic mask per-sample during training to improve robustness.",
-    )
-    parser.add_argument(
-        "--semantic_fusion_mode",
-        type=str,
-        default="latent",
-        choices=["latent", "early"],
-        help="Use latent fusion or 4-channel early fusion for semantic conditioning.",
-    )
 
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -759,13 +709,6 @@ def main():
             args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
         )
 
-    if args.semantic_fusion_mode == "early":
-        changed = enable_vae_early_fusion(vae)
-        if changed:
-            logger.info("Enabled 4-channel VAE encoder for semantic early fusion training.")
-        if args.semantic_mask_strength > 0:
-            logger.warning("semantic_mask_strength is ignored in early fusion mode.")
-
     unet = UNet2DConditionModel.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.non_ema_revision,
         class_embed_type="projection", projection_class_embeddings_input_dim=4, # Important! new projection layer will be initailized.
@@ -859,13 +802,9 @@ def main():
         )
     with accelerator.main_process_first():
         if args.max_train_samples is not None:
-            if hasattr(train_hypersim_dataset, "shuffle") and hasattr(train_hypersim_dataset, "select"):
-                train_hypersim_dataset = train_hypersim_dataset.shuffle(seed=args.seed).select(range(args.max_train_samples))
-        # Set the training transforms for HF Arrow datasets; map-style custom datasets are already transformed in __getitem__.
-        if hasattr(train_hypersim_dataset, "with_transform"):
-            train_dataset_hypersim = train_hypersim_dataset.with_transform(preprocess_train_hypersim)
-        else:
-            train_dataset_hypersim = train_hypersim_dataset
+            train_hypersim_dataset = train_hypersim_dataset.shuffle(seed=args.seed).select(range(args.max_train_samples))
+        # Set the training transforms
+        train_dataset_hypersim = train_hypersim_dataset.with_transform(preprocess_train_hypersim)
     
     train_dataloader_hypersim = torch.utils.data.DataLoader(
         train_dataset_hypersim,
@@ -876,37 +815,16 @@ def main():
         pin_memory=True
     )
     # -------------------- Dataset2: VKITTI --------------------
-    has_vkitti = False
-    if args.train_data_dir_vkitti is not None and os.path.isdir(args.train_data_dir_vkitti):
-        # Require at least one canonical VKITTI scene folder to avoid treating an empty placeholder directory as valid data.
-        vkitti_scene_markers = [d for d in ("Scene01", "Scene02", "Scene06", "Scene18", "Scene20") if os.path.isdir(os.path.join(args.train_data_dir_vkitti, d))]
-        has_vkitti = len(vkitti_scene_markers) > 0
-    if args.mix_dataset and not has_vkitti:
-        logger.warning(
-            "mix_dataset is enabled but VKITTI path is missing: %s. Fallback to Hypersim-only training.",
-            args.train_data_dir_vkitti,
+    transform_vkitti = VKITTITransform(random_flip=args.random_flip)
+    train_dataset_vkitti = VKITTIDataset(args.train_data_dir_vkitti, transform_vkitti, args.norm_type, truncnorm_min=args.truncnorm_min)
+    train_dataloader_vkitti = torch.utils.data.DataLoader(
+        train_dataset_vkitti, 
+        shuffle=True,
+        collate_fn=collate_fn_vkitti,
+        batch_size=args.train_batch_size, 
+        num_workers=args.dataloader_num_workers,
+        pin_memory=True
         )
-        args.mix_dataset = False
-
-    if has_vkitti:
-        transform_vkitti = VKITTITransform(random_flip=args.random_flip)
-        train_dataset_vkitti = VKITTIDataset(
-            args.train_data_dir_vkitti,
-            transform_vkitti,
-            args.norm_type,
-            truncnorm_min=args.truncnorm_min,
-        )
-        train_dataloader_vkitti = torch.utils.data.DataLoader(
-            train_dataset_vkitti,
-            shuffle=True,
-            collate_fn=collate_fn_vkitti,
-            batch_size=args.train_batch_size,
-            num_workers=args.dataloader_num_workers,
-            pin_memory=True,
-        )
-    else:
-        train_dataset_vkitti = None
-        train_dataloader_vkitti = train_dataloader_hypersim
     
     # Lr_scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -967,7 +885,7 @@ def main():
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples Hypersim = {len(train_dataset_hypersim)}")
-    logger.info(f"  Num examples VKITTI = {len(train_dataset_vkitti) if train_dataset_vkitti is not None else 0}")
+    logger.info(f"  Num examples VKITTI = {len(train_dataset_vkitti)}")
     logger.info(f"  Using mix datasets: {args.mix_dataset}")
     logger.info(f"  Dataset alternation probability of Hypersim = {args.prob_hypersim}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
@@ -1033,18 +951,16 @@ def main():
 
     for epoch in range(first_epoch, args.num_train_epochs):
         iter_hypersim = iter(train_dataloader_hypersim)
-        iter_vkitti = iter(train_dataloader_vkitti) if args.mix_dataset else None
+        iter_vkitti = iter(train_dataloader_vkitti)
 
         train_loss = 0.0
         log_ann_loss = 0.0
         log_rgb_loss = 0.0
 
         for _ in range(len(train_dataloader_hypersim)):
-            dataset_source = "hypersim"
             if args.mix_dataset:
                 if random.random() < args.prob_hypersim:
                     batch = next(iter_hypersim)
-                    dataset_source = "hypersim"
                 else:
                     # Important note:
                     # In our training process, the Hypersim dataset is larger than the VKITTI dataset
@@ -1054,48 +970,15 @@ def main():
                     except StopIteration:
                         iter_vkitti = iter(train_dataloader_vkitti)
                         batch = next(iter_vkitti)
-                    dataset_source = "vkitti"
             else:
                 batch = next(iter_hypersim)
-                dataset_source = "hypersim"
 
             with accelerator.accumulate(unet):
-                semantic_mask_batch = None
-                use_semantic_input = args.semantic_fusion_mode == "early" or args.semantic_mask_strength > 0
-                if use_semantic_input:
-                    mask_root = (
-                        args.semantic_mask_dir_hypersim
-                        if dataset_source == "hypersim"
-                        else args.semantic_mask_dir_vkitti
-                    )
-                    semantic_mask_batch = build_semantic_mask_batch(
-                        image_paths=batch["image_pathes"],
-                        mask_root=mask_root,
-                        target_hw=batch["pixel_values"].shape[-2:],
-                        device=accelerator.device,
-                    )
-                    if semantic_mask_batch is not None and args.semantic_dropout_p > 0:
-                        keep = (torch.rand(semantic_mask_batch.shape[0], 1, 1, 1, device=accelerator.device) > args.semantic_dropout_p).float()
-                        semantic_mask_batch = semantic_mask_batch * keep
-
                 # Convert images to latent space
-                rgb_input_for_vae = torch.cat((batch["pixel_values"], batch["pixel_values"]), dim=0).to(weight_dtype)
-                if args.semantic_fusion_mode == "early":
-                    sem_mask_2x = None
-                    if semantic_mask_batch is not None:
-                        sem_mask_2x = torch.cat((semantic_mask_batch, semantic_mask_batch), dim=0).to(weight_dtype)
-                    rgb_input_for_vae = concat_rgb_and_mask(rgb_input_for_vae, sem_mask_2x)
-
                 rgb_latents = vae.encode(
-                    rgb_input_for_vae
+                    torch.cat((batch["pixel_values"],batch["pixel_values"]), dim=0).to(weight_dtype)
                     ).latent_dist.sample()
                 rgb_latents = rgb_latents * vae.config.scaling_factor
-                if args.semantic_fusion_mode == "latent" and semantic_mask_batch is not None:
-                    sem_mask_2x = torch.cat((semantic_mask_batch, semantic_mask_batch), dim=0).to(weight_dtype)
-                    sem_rgb = sem_mask_2x.repeat(1, 3, 1, 1) * 2.0 - 1.0
-                    sem_latents = vae.encode(sem_rgb).latent_dist.sample()
-                    sem_latents = sem_latents * vae.config.scaling_factor
-                    rgb_latents = rgb_latents + args.semantic_mask_strength * sem_latents
 
                 # Convert target_annotations to latent space
                 assert len(args.task_name) == 1
@@ -1106,10 +989,9 @@ def main():
                 else:
                     raise ValueError(f"Do not support {args.task_name[0]} yet. ")
                 
-                target_concat = torch.cat((batch[TAR_ANNO], batch["pixel_values"]), dim=0).to(weight_dtype)
-                if args.semantic_fusion_mode == "early":
-                    target_concat = append_constant_channel(target_concat, value=0.0)
-                target_latents = vae.encode(target_concat).latent_dist.sample()
+                target_latents = vae.encode(
+                    torch.cat((batch[TAR_ANNO],batch["pixel_values"]), dim=0).to(weight_dtype)
+                    ).latent_dist.sample()
                 target_latents = target_latents * vae.config.scaling_factor
                 
                 bsz = target_latents.shape[0]

@@ -75,9 +75,7 @@ def evaluation_depth(output_dir, dataset_config, base_data_dir, eval_mode, pred_
         cfg_data, base_data_dir=base_data_dir, mode=DatasetMode.EVAL
     )
 
-    # Windows cannot pickle dataset lambdas used by DataLoader workers.
-    num_workers = 0 if os.name == "nt" else 8
-    dataloader = DataLoader(dataset, batch_size=1, num_workers=num_workers, pin_memory=num_workers > 0)
+    dataloader = DataLoader(dataset, batch_size=1, num_workers=8, pin_memory=True)
 
     # -------------------- Eval metrics --------------------
     metric_funcs = [getattr(metric, _met) for _met in eval_metrics]
