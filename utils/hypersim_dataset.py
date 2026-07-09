@@ -7,6 +7,9 @@ import torch
 import torch.nn.functional as F
 import random
 from torchvision import transforms
+from huggingface_hub import hf_hub_download
+
+from utils.hypersim_hf_index import collect_hypersim_rgb_depth_pairs
 
 def hypersim_distance_to_depth(npyDistance):
     intWidth=1024
@@ -134,6 +137,17 @@ class HypersimImageDepthNormalTransform:
         return image, depth, normal
 
 def get_hypersim_dataset_depth_normal(data_dir, resolution, random_flip, norm_type, truncnorm_min, align_cam_normal=False, split='train'):
+    if data_dir.startswith("hf://"):
+        return get_hypersim_dataset_depth_from_hf(
+            data_uri=data_dir,
+            resolution=resolution,
+            random_flip=random_flip,
+            norm_type=norm_type,
+            truncnorm_min=truncnorm_min,
+            align_cam_normal=align_cam_normal,
+            split=split,
+        )
+
     split_dir = os.path.join(data_dir, split)
     # load data and construct the dataset
     data_dict = {
@@ -143,13 +157,23 @@ def get_hypersim_dataset_depth_normal(data_dir, resolution, random_flip, norm_ty
     }
     for root, dirs, files in os.walk(split_dir):
         for file in files:
-            if file.endswith("tonemap.jpg"): 
+            if file.endswith("tonemap.jpg"):
                 image_path = os.path.join(root, file)
                 depth_path = image_path.replace("final_preview", "geometry_hdf5").replace("tonemap.jpg", "depth_meters.hdf5")
                 normal_path = image_path.replace("final_preview", "geometry_hdf5").replace("tonemap.jpg", "normal_cam.hdf5")
                 data_dict["image"].append(image_path)
                 data_dict["depth"].append(depth_path)
                 data_dict["normal"].append(normal_path)
+            elif file.startswith("rgb_cam_") and file.endswith(".png"):
+                # Hugging Face "Hypersim-Processed" format.
+                image_path = os.path.join(root, file)
+                depth_file = file.replace("rgb_cam_", "depth_plane_cam_")
+                depth_path = os.path.join(root, depth_file)
+                if not os.path.isfile(depth_path):
+                    continue
+                data_dict["image"].append(image_path)
+                data_dict["depth"].append(depth_path)
+                data_dict["normal"].append(None)
     dataset = Dataset_hf.from_dict(data_dict)
     
     # define dataset transform
@@ -175,14 +199,41 @@ def get_hypersim_dataset_depth_normal(data_dir, resolution, random_flip, norm_ty
         depths = [] # List[np.array()]
         normals = [] # List[np.array()]
         for depth_file in examples[depth_column]:
-            # convert distance to depth
-            depth_fd = h5py.File(depth_file, 'r')
-            dist = np.array(depth_fd['dataset'])
-            depths.append(hypersim_distance_to_depth(dist))
-        for normal_file in examples[normal_colum]:
-            normal_fd = h5py.File(normal_file, 'r')
-            dist = np.array(normal_fd['dataset'])
-            normals.append(dist)
+            if depth_file.endswith(".hdf5"):
+                # Original Hypersim release stores camera-ray distance in meters.
+                depth_fd = h5py.File(depth_file, 'r')
+                dist = np.array(depth_fd['dataset'])
+                depth = hypersim_distance_to_depth(dist)
+            else:
+                # Processed mirrors usually store projective depth in png format.
+                depth = np.array(Image.open(depth_file))
+                if depth.dtype == np.uint16 and depth.max() > 1000:
+                    # Some mirrors store centimeters in uint16.
+                    depth = depth.astype(np.float32) / 100.0
+                else:
+                    depth = depth.astype(np.float32)
+            depth = np.clip(depth, 1e-4, None)
+            depths.append(depth)
+        for idx, normal_file in enumerate(examples[normal_colum]):
+            if normal_file is None or not os.path.isfile(normal_file):
+                # Depth-only mirrors: provide a neutral normal map.
+                h, w = depths[idx].shape[:2]
+                fallback_normal = np.zeros((h, w, 3), dtype=np.float32)
+                fallback_normal[..., 2] = 1.0
+                normals.append(fallback_normal)
+                continue
+
+            if normal_file.endswith(".hdf5"):
+                normal_fd = h5py.File(normal_file, 'r')
+                dist = np.array(normal_fd['dataset'])
+                normals.append(dist)
+            else:
+                normal = np.array(Image.open(normal_file)).astype(np.float32)
+                if normal.ndim == 2:
+                    normal = np.stack([normal, normal, normal], axis=-1)
+                if normal.max() > 1.0:
+                    normal = normal / 255.0 * 2.0 - 1.0
+                normals.append(normal)
         # transform image and annotation simutanueously. 
         examples["pixel_values"] = []
         examples["depth_values"] = []
@@ -222,4 +273,140 @@ def get_hypersim_dataset_depth_normal(data_dir, resolution, random_flip, norm_ty
 
         return example_dict
     
+    return dataset, preprocess_hypersim, collate_fn_hypersim
+
+
+class HypersimHFDataset(torch.utils.data.Dataset):
+    """
+    On-demand Hypersim dataset backed by Hugging Face Hub.
+    Files are pulled lazily and cached in the local HF cache directory.
+    """
+
+    def __init__(self, repo_id, split, transform, max_pairs=0, scene_prefixes=None):
+        self.repo_id = repo_id
+        self.split = split
+        self.transform = transform
+        self.scene_prefixes = scene_prefixes or []
+        self.max_pairs = max_pairs
+        self.items = collect_hypersim_rgb_depth_pairs(
+            repo_id=self.repo_id,
+            split=self.split,
+            max_pairs=self.max_pairs,
+            scene_prefixes=self.scene_prefixes,
+        )
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, idx):
+        rgb_file, depth_file = self.items[idx]
+        image_path = hf_hub_download(repo_id=self.repo_id, repo_type="dataset", filename=rgb_file)
+        depth_path = hf_hub_download(repo_id=self.repo_id, repo_type="dataset", filename=depth_file)
+
+        image = Image.open(image_path).convert("RGB")
+        depth = np.array(Image.open(depth_path))
+        if depth.dtype == np.uint16 and depth.max() > 1000:
+            depth = depth.astype(np.float32) / 100.0
+        else:
+            depth = depth.astype(np.float32)
+        depth = np.clip(depth, 1e-4, None)
+
+        h, w = depth.shape[:2]
+        fallback_normal = np.zeros((h, w, 3), dtype=np.float32)
+        fallback_normal[..., 2] = 1.0
+        pixel_values, depth_values, normal_values = self.transform(image, depth, fallback_normal)
+
+        return {
+            "pixel_values": pixel_values,
+            "depth_values": depth_values,
+            "normal_values": normal_values,
+            "image_pathes": f"hf://{self.repo_id}/{rgb_file}",
+            "depth_paths": f"hf://{self.repo_id}/{depth_file}",
+            "normal_paths": None,
+        }
+
+
+def get_hypersim_dataset_depth_from_hf(data_uri, resolution, random_flip, norm_type, truncnorm_min, align_cam_normal=False, split="train"):
+    """
+    data_uri format:
+      hf://<repo_id>/<split>
+      hf://<repo_id>/<split>?max_pairs=2000&scene_prefix=ai_001,ai_002
+    """
+    uri = data_uri[len("hf://") :]
+    query = ""
+    if "?" in uri:
+        uri, query = uri.split("?", 1)
+
+    # repo_id can contain exactly one '/'.
+    uri_parts = uri.split("/")
+    if len(uri_parts) < 3:
+        raise ValueError("HF data uri must be like hf://owner/repo/split")
+    repo_id = f"{uri_parts[0]}/{uri_parts[1]}"
+    split_from_uri = uri_parts[2]
+    split = split_from_uri or split
+
+    max_pairs = 0
+    scene_prefixes = []
+    if query:
+        for kv in query.split("&"):
+            if "=" not in kv:
+                continue
+            k, v = kv.split("=", 1)
+            if k == "max_pairs" and v.isdigit():
+                max_pairs = int(v)
+            elif k == "scene_prefix":
+                scene_prefixes = [x.strip() for x in v.split(",") if x.strip()]
+
+    pairs = collect_hypersim_rgb_depth_pairs(
+        repo_id=repo_id,
+        split=split,
+        max_pairs=max_pairs,
+        scene_prefixes=scene_prefixes,
+    )
+    sample_path = hf_hub_download(repo_id=repo_id, repo_type="dataset", filename=pairs[0][0])
+    w, h = Image.open(sample_path).size
+    if h > w:
+        new_w = resolution
+        new_h = int(resolution * h / w)
+    else:
+        new_h = resolution
+        new_w = int(resolution * w / h)
+    transform = HypersimImageDepthNormalTransform((new_h, new_w), random_flip, norm_type, truncnorm_min, align_cam_normal)
+    dataset = HypersimHFDataset(
+        repo_id=repo_id,
+        split=split,
+        transform=transform,
+        max_pairs=max_pairs,
+        scene_prefixes=scene_prefixes,
+    )
+    # Reuse pairs resolved above; avoid a second index lookup in __init__.
+    dataset.items = pairs
+
+    def preprocess_hypersim(examples):
+        # no-op because items are transformed in __getitem__
+        return examples
+
+    def collate_fn_hypersim(examples):
+        pixel_values = torch.stack([example["pixel_values"] for example in examples])
+        pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
+
+        depth_values = torch.stack([example["depth_values"] for example in examples])
+        depth_values = depth_values.to(memory_format=torch.contiguous_format).float()
+
+        normal_values = torch.stack([example["normal_values"] for example in examples])
+        normal_values = normal_values.to(memory_format=torch.contiguous_format).float()
+
+        image_paths = [example["image_pathes"] for example in examples]
+        depth_paths = [example["depth_paths"] for example in examples]
+        normal_paths = [example["normal_paths"] for example in examples]
+
+        return {
+            "pixel_values": pixel_values,
+            "depth_values": depth_values,
+            "normal_values": normal_values,
+            "image_pathes": image_paths,
+            "depth_paths": depth_paths,
+            "normal_paths": normal_paths,
+        }
+
     return dataset, preprocess_hypersim, collate_fn_hypersim

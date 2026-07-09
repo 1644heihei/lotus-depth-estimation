@@ -8,6 +8,7 @@ from packaging import version
 from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection
 import tensorboard
 from utils.image_utils import resize_max_res, get_tv_resample_method, resize_back, get_pil_resample_method
+from utils.pre_depth_fusion import downsample_valid_mask, encode_pre_depth_latents
 from torchvision.transforms.functional import resize
 from torchvision.transforms import InterpolationMode
 
@@ -1020,6 +1021,8 @@ class LotusDPipeline(DirectDiffusionPipeline):
         self,
         rgb_in: Optional[torch.FloatTensor] = None,
         task_emb: Optional[torch.FloatTensor] = None,
+        pre_depth: Optional[torch.FloatTensor] = None,
+        pre_depth_valid_mask: Optional[torch.FloatTensor] = None,
         prompt: Union[str, List[str]] = None,
         timesteps: List[int] = None,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
@@ -1040,6 +1043,11 @@ class LotusDPipeline(DirectDiffusionPipeline):
                 Input RGB tensor, range [-1, 1]. 
             task_emb (`torch.FloatTensor`)
                 Task switcher for reconstruction or dense prediction (depth or normal). 
+            pre_depth (`torch.FloatTensor`, *optional*):
+                Optional pre-depth condition map in normalized range (typically [-1, 1]),
+                shape [B, 1, H, W] or [B, 3, H, W].
+            pre_depth_valid_mask (`torch.FloatTensor`, *optional*):
+                Optional valid mask for pre-depth, shape [B, 1, H, W]. Values > 0.5 are treated as valid.
             prompt (`str` or `List[str]`, *optional*):
                 The prompt or prompts to guide image generation. If not defined, you need to pass `prompt_embeds`.
             timesteps (`List[int]`, *optional*):
@@ -1124,6 +1132,46 @@ class LotusDPipeline(DirectDiffusionPipeline):
         # 5. Denoising
         t = timesteps[0]
         latent_model_input = rgb_latents
+        expected_in_channels = self.unet.config.in_channels
+        if expected_in_channels > rgb_latents.shape[1]:
+            extra_channels = expected_in_channels - rgb_latents.shape[1]
+            if extra_channels == 5:
+                if pre_depth is None:
+                    pre_depth = torch.zeros(
+                        (rgb_in.shape[0], 1, rgb_in.shape[-2], rgb_in.shape[-1]),
+                        device=device,
+                        dtype=rgb_in.dtype,
+                    )
+                else:
+                    pre_depth = pre_depth.to(device=device, dtype=rgb_in.dtype)
+                    if pre_depth.shape[-2:] != rgb_in.shape[-2:]:
+                        pre_depth = F.interpolate(pre_depth, size=rgb_in.shape[-2:], mode="bilinear", align_corners=False)
+                if pre_depth_valid_mask is None:
+                    pre_depth_valid_mask = torch.zeros(
+                        (rgb_in.shape[0], 1, rgb_in.shape[-2], rgb_in.shape[-1]),
+                        device=device,
+                        dtype=rgb_in.dtype,
+                    )
+                else:
+                    pre_depth_valid_mask = pre_depth_valid_mask.to(device=device, dtype=rgb_in.dtype)
+                    if pre_depth_valid_mask.shape[-2:] != rgb_in.shape[-2:]:
+                        pre_depth_valid_mask = F.interpolate(
+                            pre_depth_valid_mask, size=rgb_in.shape[-2:], mode="nearest"
+                        )
+                pre_depth_latents = encode_pre_depth_latents(self.vae, pre_depth)
+                pre_depth_mask_lat = downsample_valid_mask(
+                    pre_depth_valid_mask,
+                    target_hw=pre_depth_latents.shape[-2:],
+                ).to(dtype=pre_depth_latents.dtype)
+                latent_model_input = torch.cat([rgb_latents, pre_depth_latents, pre_depth_mask_lat], dim=1)
+            else:
+                # Fallback for unexpected channel counts: append zeros.
+                zeros = torch.zeros(
+                    (rgb_latents.shape[0], extra_channels, rgb_latents.shape[-2], rgb_latents.shape[-1]),
+                    device=rgb_latents.device,
+                    dtype=rgb_latents.dtype,
+                )
+                latent_model_input = torch.cat([rgb_latents, zeros], dim=1)
 
         pred = self.unet(
             latent_model_input,

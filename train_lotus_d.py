@@ -54,6 +54,8 @@ from diffusers.utils.torch_utils import is_compiled_module
 from pipeline import LotusDPipeline
 from utils.image_utils import concatenate_images, colorize_depth_map
 from utils.hypersim_dataset import get_hypersim_dataset_depth_normal
+from utils.pre_depth_fusion import downsample_valid_mask, encode_pre_depth_latents, expand_unet_conv_in
+from utils.pre_depth_synth import synthesize_pre_depth
 from utils.vkitti_dataset import VKITTIDataset, VKITTITransform, collate_fn_vkitti
 
 from eval import evaluation_depth, evaluation_normal
@@ -67,6 +69,49 @@ logger = get_logger(__name__, log_level="INFO")
 
 TOP5_STEPS_DEPTH = []
 TOP5_STEPS_NORMAL = []
+
+
+def _masked_mean(x: torch.Tensor, mask: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    m = mask.float()
+    return (x * m).sum() / m.sum().clamp_min(eps)
+
+
+def _gradient_xy(x: torch.Tensor):
+    # x: [B, C, H, W]
+    gx = x[..., :, 1:] - x[..., :, :-1]
+    gy = x[..., 1:, :] - x[..., :-1, :]
+    return gx, gy
+
+
+def multiscale_gradient_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    valid_mask: torch.Tensor,
+    scales=(1, 2, 4, 8),
+) -> torch.Tensor:
+    """Multi-scale gradient matching loss for sharper boundaries.
+
+    Operates on latent maps to keep training overhead low.
+    """
+    loss = pred.new_tensor(0.0)
+    n = 0
+    for s in scales:
+        if s > 1:
+            p = F.avg_pool2d(pred, kernel_size=s, stride=s)
+            t = F.avg_pool2d(target, kernel_size=s, stride=s)
+            m = (F.avg_pool2d(valid_mask.float(), kernel_size=s, stride=s) > 0.5).float()
+        else:
+            p, t, m = pred, target, valid_mask.float()
+
+        pgx, pgy = _gradient_xy(p)
+        tgx, tgy = _gradient_xy(t)
+        mx = (m[..., :, 1:] * m[..., :, :-1]).float()
+        my = (m[..., 1:, :] * m[..., :-1, :]).float()
+        lx = _masked_mean(torch.abs(pgx - tgx), mx)
+        ly = _masked_mean(torch.abs(pgy - tgy), my)
+        loss = loss + 0.5 * (lx + ly)
+        n += 1
+    return loss / max(n, 1)
 
 def run_example_validation(pipeline, task, args, step, accelerator, generator):
     validation_images = glob(os.path.join(args.validation_images, "*.jpg")) + glob(os.path.join(args.validation_images, "*.png"))
@@ -422,6 +467,53 @@ def parse_args():
         help="The normalization type of the depth. "
     )
     parser.add_argument(
+        "--enable_pre_depth_fusion",
+        action="store_true",
+        help="Enable Phase-2 pre-depth latent fusion (UNet conv_in expansion + synthetic pre-depth condition).",
+    )
+    parser.add_argument(
+        "--pre_depth_dropout_p",
+        type=float,
+        default=0.3,
+        help="Condition dropout probability for synthetic pre-depth.",
+    )
+    parser.add_argument(
+        "--pre_depth_scale_jitter",
+        type=float,
+        default=0.10,
+        help="Affine scale jitter for synthetic pre-depth.",
+    )
+    parser.add_argument(
+        "--pre_depth_shift_jitter",
+        type=float,
+        default=0.05,
+        help="Affine shift jitter for synthetic pre-depth.",
+    )
+    parser.add_argument(
+        "--pre_depth_blur_sigma_max",
+        type=float,
+        default=1.5,
+        help="Maximum Gaussian blur sigma for synthetic pre-depth.",
+    )
+    parser.add_argument(
+        "--pre_depth_hole_keep_p",
+        type=float,
+        default=0.92,
+        help="Pixel keep probability (1 - hole rate) for synthetic pre-depth valid mask.",
+    )
+    parser.add_argument(
+        "--pre_depth_noise_std",
+        type=float,
+        default=0.01,
+        help="Additive noise std for synthetic pre-depth.",
+    )
+    parser.add_argument(
+        "--grad_loss_weight",
+        type=float,
+        default=0.0,
+        help="Weight of multi-scale gradient matching loss on annotation branch.",
+    )
+    parser.add_argument(
         "--random_flip",
         action="store_true",
         help="whether to randomly flip images horizontally",
@@ -714,6 +806,9 @@ def main():
         class_embed_type="projection", projection_class_embeddings_input_dim=4, # Important! new projection layer will be initailized.
         low_cpu_mem_usage=False, device_map=None,
     )
+    if args.enable_pre_depth_fusion:
+        # 4ch RGB latent -> 9ch [RGB latent(4) + pre-depth latent(4) + valid-mask(1)].
+        expand_unet_conv_in(unet, extra_in_channels=5, zero_init=True)
 
     # Freeze vae and text_encoder and set unet to trainable
     vae.requires_grad_(False)
@@ -815,16 +910,25 @@ def main():
         pin_memory=True
     )
     # -------------------- Dataset2: VKITTI --------------------
-    transform_vkitti = VKITTITransform(random_flip=args.random_flip)
-    train_dataset_vkitti = VKITTIDataset(args.train_data_dir_vkitti, transform_vkitti, args.norm_type, truncnorm_min=args.truncnorm_min)
-    train_dataloader_vkitti = torch.utils.data.DataLoader(
-        train_dataset_vkitti, 
-        shuffle=True,
-        collate_fn=collate_fn_vkitti,
-        batch_size=args.train_batch_size, 
-        num_workers=args.dataloader_num_workers,
-        pin_memory=True
+    if args.mix_dataset:
+        if args.train_data_dir_vkitti is None or len(str(args.train_data_dir_vkitti).strip()) == 0:
+            raise ValueError("--mix_dataset requires --train_data_dir_vkitti to be set.")
+        transform_vkitti = VKITTITransform(random_flip=args.random_flip)
+        train_dataset_vkitti = VKITTIDataset(
+            args.train_data_dir_vkitti, transform_vkitti, args.norm_type, truncnorm_min=args.truncnorm_min
         )
+        train_dataloader_vkitti = torch.utils.data.DataLoader(
+            train_dataset_vkitti,
+            shuffle=True,
+            collate_fn=collate_fn_vkitti,
+            batch_size=args.train_batch_size,
+            num_workers=args.dataloader_num_workers,
+            pin_memory=True,
+        )
+    else:
+        train_dataset_vkitti = []
+        # Keep a valid dataloader object for accelerator.prepare and loop initialization.
+        train_dataloader_vkitti = train_dataloader_hypersim
     
     # Lr_scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -1018,6 +1122,38 @@ def main():
 
                 # Get the unet input
                 unet_input = rgb_latents
+                if args.enable_pre_depth_fusion:
+                    gt_depth_norm = batch[TAR_ANNO][:bsz_per_task].to(weight_dtype)
+                    valid_mask_for_pre = batch.get("valid_mask_values", None)
+                    if valid_mask_for_pre is not None:
+                        valid_mask_for_pre = valid_mask_for_pre[:bsz_per_task].to(weight_dtype)
+
+                    pre_depth_anno, pre_valid_anno = synthesize_pre_depth(
+                        gt_depth_norm,
+                        valid_mask=valid_mask_for_pre,
+                        dropout_p=args.pre_depth_dropout_p,
+                        affine_scale_jitter=args.pre_depth_scale_jitter,
+                        affine_shift_jitter=args.pre_depth_shift_jitter,
+                        blur_sigma_max=args.pre_depth_blur_sigma_max,
+                        hole_keep_p=args.pre_depth_hole_keep_p,
+                        noise_std=args.pre_depth_noise_std,
+                    )
+                    # Reconstruction branch gets zero pre-depth condition by default.
+                    pre_depth_rgb = torch.zeros_like(pre_depth_anno)
+                    pre_valid_rgb = torch.zeros_like(pre_valid_anno)
+
+                    pre_depth_all = torch.cat([pre_depth_anno, pre_depth_rgb], dim=0)
+                    pre_valid_all = torch.cat([pre_valid_anno, pre_valid_rgb], dim=0)
+
+                    pre_depth_latents = encode_pre_depth_latents(
+                        vae,
+                        pre_depth_all.to(device=target_latents.device, dtype=weight_dtype),
+                    )
+                    pre_valid_lat = downsample_valid_mask(
+                        pre_valid_all.to(device=target_latents.device, dtype=weight_dtype),
+                        target_hw=pre_depth_latents.shape[-2:],
+                    ).to(dtype=pre_depth_latents.dtype)
+                    unet_input = torch.cat([rgb_latents, pre_depth_latents, pre_valid_lat], dim=1)
 
                 # Get the empty text embedding for conditioning
                 prompt = ""
@@ -1049,14 +1185,23 @@ def main():
                 # Compute loss
                 anno_loss = F.mse_loss(model_pred[:bsz_per_task][valid_mask_down_anno].float(), target[:bsz_per_task][valid_mask_down_anno].float(), reduction="mean")
                 rgb_loss = F.mse_loss(model_pred[bsz_per_task:][valid_mask_down_rgb].float(), target[bsz_per_task:][valid_mask_down_rgb].float(), reduction="mean")
-                loss = anno_loss + rgb_loss
+                grad_loss = model_pred.new_tensor(0.0)
+                if args.grad_loss_weight > 0:
+                    grad_loss = multiscale_gradient_loss(
+                        model_pred[:bsz_per_task].float(),
+                        target[:bsz_per_task].float(),
+                        valid_mask_down_anno[:bsz_per_task].float(),
+                    )
+                loss = anno_loss + rgb_loss + args.grad_loss_weight * grad_loss
                 
                 # Gather loss
                 avg_anno_loss = accelerator.gather(anno_loss.repeat(args.train_batch_size)).mean()
                 log_ann_loss += avg_anno_loss.item() / args.gradient_accumulation_steps
                 avg_rgb_loss = accelerator.gather(rgb_loss.repeat(args.train_batch_size)).mean()
                 log_rgb_loss += avg_rgb_loss.item() / args.gradient_accumulation_steps
-                train_loss = log_ann_loss + log_rgb_loss
+                avg_grad_loss = accelerator.gather(grad_loss.repeat(args.train_batch_size)).mean()
+                log_grad_loss = avg_grad_loss.item() / args.gradient_accumulation_steps
+                train_loss = log_ann_loss + log_rgb_loss + args.grad_loss_weight * log_grad_loss
 
                 # Backpropagate
                 accelerator.backward(loss)
@@ -1069,6 +1214,7 @@ def main():
             logs = {"SL": loss.detach().item(), 
                     "SL_A": anno_loss.detach().item(), 
                     "SL_R": rgb_loss.detach().item(), 
+                    "SL_G": grad_loss.detach().item(),
                     "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
             
@@ -1078,7 +1224,8 @@ def main():
                 global_step += 1
                 accelerator.log({"train_loss": train_loss,
                                 "anno_loss": log_ann_loss,
-                                "rgb_loss": log_rgb_loss},
+                                "rgb_loss": log_rgb_loss,
+                                "grad_loss": log_grad_loss},
                                  step=global_step)
                 train_loss = 0.0
                 log_ann_loss = 0.0

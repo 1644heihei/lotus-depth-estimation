@@ -75,7 +75,9 @@ def evaluation_depth(output_dir, dataset_config, base_data_dir, eval_mode, pred_
         cfg_data, base_data_dir=base_data_dir, mode=DatasetMode.EVAL
     )
 
-    dataloader = DataLoader(dataset, batch_size=1, num_workers=8, pin_memory=True)
+    # Windows spawn mode cannot pickle some dataset callables reliably.
+    # Keep evaluation deterministic and cross-platform by using single worker.
+    dataloader = DataLoader(dataset, batch_size=1, num_workers=0, pin_memory=True)
 
     # -------------------- Eval metrics --------------------
     metric_funcs = [getattr(metric, _met) for _met in eval_metrics]
