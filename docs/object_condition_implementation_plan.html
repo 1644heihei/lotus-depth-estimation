@@ -1,0 +1,1237 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>物体条件付き深度精緻化 — 実装計画</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --surface: #ffffff;
+      --text: #1a2332;
+      --muted: #5c6b7a;
+      --border: #e2e8f0;
+      --accent: #2563eb;
+      --accent-soft: #eff6ff;
+      --success: #059669;
+      --success-soft: #ecfdf5;
+      --warn: #d97706;
+      --warn-soft: #fffbeb;
+      --danger: #dc2626;
+      --danger-soft: #fef2f2;
+      --phase0: #6366f1;
+      --phase1: #0ea5e9;
+      --phase2: #10b981;
+      --phase3: #f59e0b;
+      --phase4: #8b5cf6;
+      --shadow: 0 4px 24px rgba(15, 23, 42, 0.06);
+      --radius: 12px;
+      --font: "Segoe UI", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", Meiryo, sans-serif;
+      --mono: "Cascadia Code", "Consolas", "Yu Gothic UI", monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.7;
+      font-size: 16px;
+    }
+
+    .hero {
+      background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 50%, #0ea5e9 100%);
+      color: #fff;
+      padding: 3rem 1.5rem 4rem;
+    }
+
+    .hero-inner {
+      max-width: 960px;
+      margin: 0 auto;
+    }
+
+    .hero h1 {
+      font-size: clamp(1.6rem, 4vw, 2.2rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 0.75rem;
+    }
+
+    .hero p {
+      font-size: 1.05rem;
+      opacity: 0.92;
+      max-width: 720px;
+    }
+
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-top: 1.5rem;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 0.25rem 0.75rem;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      background: rgba(255,255,255,0.18);
+      border: 1px solid rgba(255,255,255,0.25);
+    }
+
+    .container {
+      max-width: 960px;
+      margin: -2rem auto 3rem;
+      padding: 0 1.5rem;
+    }
+
+    nav.toc {
+      background: var(--surface);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 1.5rem 1.75rem;
+      margin-bottom: 2rem;
+      border: 1px solid var(--border);
+    }
+
+    nav.toc h2 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+    }
+
+    nav.toc ol {
+      padding-left: 1.25rem;
+      columns: 2;
+      column-gap: 2rem;
+    }
+
+    nav.toc a {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 0.95rem;
+    }
+
+    nav.toc a:hover { text-decoration: underline; }
+
+    section {
+      background: var(--surface);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 2rem;
+      margin-bottom: 1.5rem;
+      border: 1px solid var(--border);
+    }
+
+    section h2 {
+      font-size: 1.35rem;
+      margin-bottom: 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 2px solid var(--accent-soft);
+      color: var(--text);
+    }
+
+    section h3 {
+      font-size: 1.05rem;
+      margin: 1.5rem 0 0.75rem;
+      color: var(--text);
+    }
+
+    p { margin-bottom: 0.85rem; color: var(--text); }
+    p:last-child { margin-bottom: 0; }
+
+    .lead {
+      font-size: 1.05rem;
+      color: var(--muted);
+    }
+
+    .callout {
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+      margin: 1rem 0;
+      font-size: 0.95rem;
+    }
+
+    .callout.info { background: var(--accent-soft); border-left: 4px solid var(--accent); }
+    .callout.warn { background: var(--warn-soft); border-left: 4px solid var(--warn); }
+    .callout.success { background: var(--success-soft); border-left: 4px solid var(--success); }
+    .callout.danger { background: var(--danger-soft); border-left: 4px solid var(--danger); }
+
+    .callout strong { display: block; margin-bottom: 0.25rem; }
+
+    /* Pipeline diagram */
+    .pipeline {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      margin: 1.5rem 0;
+    }
+
+    .pipe-row {
+      display: flex;
+      align-items: stretch;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .pipe-box {
+      flex: 1;
+      min-width: 140px;
+      background: var(--accent-soft);
+      border: 2px solid #bfdbfe;
+      border-radius: 10px;
+      padding: 0.85rem 1rem;
+      text-align: center;
+      font-size: 0.88rem;
+      font-weight: 600;
+    }
+
+    .pipe-box.input { background: #f0fdf4; border-color: #86efac; }
+    .pipe-box.output { background: #fef3c7; border-color: #fcd34d; }
+    .pipe-box.process { background: var(--accent-soft); border-color: #bfdbfe; }
+
+    .pipe-arrow {
+      text-align: center;
+      color: var(--muted);
+      font-size: 1.2rem;
+      padding: 0.25rem 0;
+    }
+
+    .pipe-label {
+      font-size: 0.75rem;
+      color: var(--muted);
+      font-weight: 400;
+      margin-top: 0.25rem;
+    }
+
+    /* Three goals */
+    .goals {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      margin: 1.25rem 0;
+    }
+
+    .goal-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.25rem;
+      text-align: center;
+    }
+
+    .goal-num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 2rem;
+      height: 2rem;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 50%;
+      font-weight: 700;
+      font-size: 0.9rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .goal-card h4 { font-size: 0.95rem; margin-bottom: 0.35rem; }
+    .goal-card p { font-size: 0.85rem; color: var(--muted); margin: 0; }
+
+    /* Status table */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+      margin: 1rem 0;
+    }
+
+    th, td {
+      padding: 0.65rem 0.85rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+
+    th {
+      background: var(--bg);
+      font-weight: 600;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    .status-done {
+      color: var(--success);
+      font-weight: 600;
+    }
+
+    .status-todo {
+      color: var(--danger);
+      font-weight: 600;
+    }
+
+    .status-partial {
+      color: var(--warn);
+      font-weight: 600;
+    }
+
+    code, .file {
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      background: var(--bg);
+      padding: 0.15rem 0.45rem;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+    }
+
+    /* Phase cards */
+    .phases { display: flex; flex-direction: column; gap: 1.25rem; }
+
+    .phase {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    .phase-header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 1rem 1.25rem;
+      color: #fff;
+      font-weight: 700;
+    }
+
+    .phase-header .num {
+      font-size: 1.5rem;
+      opacity: 0.85;
+      min-width: 2rem;
+    }
+
+    .phase-header .title { flex: 1; font-size: 1.05rem; }
+    .phase-header .duration {
+      font-size: 0.8rem;
+      opacity: 0.9;
+      background: rgba(0,0,0,0.15);
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+    }
+
+    .phase-0 .phase-header { background: var(--phase0); }
+    .phase-1 .phase-header { background: var(--phase1); }
+    .phase-2 .phase-header { background: var(--phase2); }
+    .phase-3 .phase-header { background: var(--phase3); }
+    .phase-4 .phase-header { background: var(--phase4); }
+
+    .phase-body { padding: 1.25rem; background: var(--surface); }
+
+    .task-list {
+      list-style: none;
+      padding: 0;
+    }
+
+    .task-list li {
+      padding: 0.5rem 0 0.5rem 1.75rem;
+      position: relative;
+      border-bottom: 1px dashed var(--border);
+      font-size: 0.92rem;
+    }
+
+    .task-list li:last-child { border-bottom: none; }
+
+    .task-list li::before {
+      content: "□";
+      position: absolute;
+      left: 0;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+
+    .criteria {
+      margin-top: 1rem;
+      padding: 0.85rem 1rem;
+      background: var(--success-soft);
+      border-radius: 8px;
+      font-size: 0.88rem;
+    }
+
+    .criteria strong { color: var(--success); }
+
+    /* Architecture */
+    .arch-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+
+    .arch-card {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.15rem;
+      background: var(--bg);
+    }
+
+    .arch-card h4 {
+      font-size: 0.95rem;
+      margin-bottom: 0.5rem;
+      color: var(--accent);
+    }
+
+    .arch-card ul {
+      padding-left: 1.1rem;
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+
+    .arch-card li { margin-bottom: 0.25rem; }
+
+    .channel-diagram {
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      background: #1e293b;
+      color: #e2e8f0;
+      padding: 1.25rem;
+      border-radius: 10px;
+      overflow-x: auto;
+      line-height: 1.9;
+      margin: 1rem 0;
+    }
+
+    .channel-diagram .new { color: #4ade80; }
+    .channel-diagram .existing { color: #93c5fd; }
+
+    /* Timeline */
+    .timeline {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      margin: 1.25rem 0;
+    }
+
+    .tl-item {
+      flex: 1;
+      min-width: 120px;
+      text-align: center;
+      padding: 0.75rem 0.5rem;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    .tl-item small {
+      display: block;
+      font-weight: 400;
+      opacity: 0.85;
+      margin-top: 0.2rem;
+      font-size: 0.72rem;
+    }
+
+    /* Risk table */
+    .risk-grid {
+      display: grid;
+      gap: 0.75rem;
+      margin: 1rem 0;
+    }
+
+    .risk-item {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.5rem;
+      padding: 0.85rem 1rem;
+      background: var(--bg);
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      font-size: 0.88rem;
+    }
+
+    .risk-item .risk { color: var(--danger); font-weight: 600; }
+    .risk-item .mitigation { color: var(--success); }
+
+    @media (max-width: 640px) {
+      nav.toc ol { columns: 1; }
+      .risk-item { grid-template-columns: 1fr; }
+      section { padding: 1.25rem; }
+    }
+
+    footer {
+      text-align: center;
+      padding: 2rem 1.5rem;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body>
+
+  <header class="hero">
+    <div class="hero-inner">
+      <h1>物体条件付き深度精緻化<br>実装計画</h1>
+      <p>
+        <strong>2段階学習</strong>で深度推定を行う研究の実装ロードマップです。
+        学習1回目でコア（全体）深度を学習し、学習2回目で YOLO 検出結果を条件に
+        物体領域の詳細深度を学習します。
+      </p>
+      <div class="hero-meta">
+        <span class="badge">学習1: コア予測モデル</span>
+        <span class="badge">学習2: 詳細予測モデル</span>
+        <span class="badge">方式A: オフライン固定データセット</span>
+        <span class="badge">推定所要: 約 4〜5 週間</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <nav class="toc">
+      <h2>目次</h2>
+      <ol>
+        <li><a href="#goal">研究の目的</a></li>
+        <li><a href="#approach-a">方式A — オフライン固定データセット</a></li>
+        <li><a href="#pipeline">推論の全体の流れ</a></li>
+        <li><a href="#status">現状と差分</a></li>
+        <li><a href="#architecture">2つのモデルのアーキテクチャ</a></li>
+        <li><a href="#phases">フェーズ別計画</a></li>
+        <li><a href="#files">ファイル一覧</a></li>
+        <li><a href="#schedule">スケジュール</a></li>
+        <li><a href="#risks">リスクと対策</a></li>
+        <li><a href="#decisions">判断ポイント</a></li>
+      </ol>
+    </nav>
+
+    <!-- 1. Goal -->
+    <section id="goal">
+      <h2>1. 研究の目的</h2>
+      <p class="lead">
+        単眼深度推定モデル（Lotus-D）の出力を、物体単位でより詳細・正確な深度に改善する。
+      </p>
+
+      <div class="goals">
+        <div class="goal-card">
+          <div class="goal-num">1</div>
+          <h4>学習1: コア予測</h4>
+          <p>RGB のみで全体の深度を予測するモデルを学習</p>
+        </div>
+        <div class="goal-card">
+          <div class="goal-num">2</div>
+          <h4>YOLO で物体検出</h4>
+          <p>推論時に RGB から bbox・クラス・マスクを取得（詳細予測の前提）</p>
+        </div>
+        <div class="goal-card">
+          <div class="goal-num">3</div>
+          <h4>学習2: 詳細予測</h4>
+          <p>コア深度 + YOLO 条件を入力し、物体領域を精緻化するモデルを学習</p>
+        </div>
+      </div>
+
+      <div class="callout info">
+        <strong>YOLO の入力について</strong>
+        物体検出は <strong>RGB 画像</strong> に対して行います。深度カラーマップではなく RGB → YOLO → 詳細予測 の流れです。
+      </div>
+
+      <div class="callout warn">
+        <strong>旧計画との違い</strong>
+        以前の案は「公式 Lotus-D への学習1回（微調整のみ）」でした。
+        本計画は <strong>学習を2回</strong> に分け、2回目で YOLO 由来の物体条件を使います。
+      </div>
+    </section>
+
+    <!-- 2. Two-stage training -->
+    <section id="two-stage">
+      <h2>2. 2段階学習の設計（重要）</h2>
+      <p class="lead">
+        学習は <strong>2回</strong> 行います。1回目と2回目は役割・入力・出力が異なる<strong>別モデル</strong>です。
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>学習1回目: コア予測</th>
+            <th>学習2回目: 詳細予測</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>役割</strong></td>
+            <td>画像全体の深度を予測（ベースライン）</td>
+            <td>物体領域の深度を精緻化（ROI 重視）</td>
+          </tr>
+          <tr>
+            <td><strong>入力</strong></td>
+            <td>RGB のみ（UNet 4ch）</td>
+            <td>RGB + pre-depth + 有効マスク + class map（UNet 9〜13ch）</td>
+          </tr>
+          <tr>
+            <td><strong>学習データ</strong></td>
+            <td>RGB + GT 深度（Hypersim 等）</td>
+            <td><strong>方式A:</strong> 事前構築した固定データセット（下記参照）</td>
+          </tr>
+          <tr>
+            <td><strong>YOLO の使用</strong></td>
+            <td class="status-done">使わない</td>
+            <td class="status-done">推論時: 毎回実行 / 学習時: <strong>事前生成済みデータを読むだけ</strong></td>
+          </tr>
+          <tr>
+            <td><strong>初期重み</strong></td>
+            <td>SD2 Base または公式 Lotus-D</td>
+            <td>学習1のチェックポイント（conv_in ゼロ拡張）</td>
+          </tr>
+          <tr>
+            <td><strong>学習スクリプト</strong></td>
+            <td><code>train_lotus_d_core.ps1</code>（新規）</td>
+            <td><code>train_lotus_d_detail.ps1</code>（新規、旧 pre_depth を改名）</td>
+          </tr>
+          <tr>
+            <td><strong>出力</strong></td>
+            <td><code>output/core-model/</code></td>
+            <td><code>output/detail-model/</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3 id="approach-a">学習2のデータ準備 — 方式A（オフライン固定データセット）</h3>
+      <p class="lead">
+        学習2の前に、<strong>全学習データに対して推論パイプラインと同じ処理を1回だけ実行</strong>し、
+        固定データセットとして保存します。学習ループ内で YOLO やコアモデルを回しません。
+      </p>
+
+      <div class="callout success">
+        <strong>方式A を採用する理由</strong>
+        推論時と同一の条件（YOLO 検出 → コアモデル深度 → 整合 → pre-depth）で学習できるため、
+        最も確実です。学習中の擬似合成（GT 深度の劣化）は使いません。
+      </div>
+
+      <h3>オフライン前処理の3ステップ</h3>
+      <div class="pipeline">
+        <div class="pipe-row">
+          <div class="pipe-box process">
+            <strong>Step 1</strong> YOLO 全データ実行
+            <div class="pipe-label">detections.json + mask PNG</div>
+          </div>
+        </div>
+        <div class="pipe-arrow">↓</div>
+        <div class="pipe-row">
+          <div class="pipe-box process">
+            <strong>Step 2</strong> コアモデルで pre-depth 生成
+            <div class="pipe-label">global + crop 深度 → lstsq 整合 → pre_depth.npy</div>
+          </div>
+        </div>
+        <div class="pipe-arrow">↓</div>
+        <div class="pipe-row">
+          <div class="pipe-box process">
+            <strong>Step 3</strong> class_map 生成
+            <div class="pipe-label">YOLO クラス ID → class_map.npy</div>
+          </div>
+        </div>
+        <div class="pipe-arrow">↓</div>
+        <div class="pipe-row">
+          <div class="pipe-box output">固定学習データセット完成</div>
+        </div>
+      </div>
+
+      <h3>データセットのディレクトリ構成</h3>
+      <div class="channel-diagram">
+data/detail_train/
+  train/
+    scene_000/
+      rgb_cam_00.png              # 元画像（既存）
+      depth_plane_cam_00.png      # GT深度（既存）
+      detections.json             # Step1: YOLO bbox/class/score/mask_path
+      mask_cam_00.png             # Step1: 統合マスク（任意）
+      pre_depth_cam_00.npy        # Step2: コアモデル+YOLOで生成した pre-depth
+      pre_depth_valid_cam_00.npy  # Step2: 有効マスク
+      class_map_cam_00.npy        # Step3: クラス ID マップ
+      ...
+      </div>
+
+      <h3>推論時 vs 学習時</h3>
+      <div class="arch-grid">
+        <div class="arch-card">
+          <h4>推論時（本番）</h4>
+          <ul>
+            <li>RGB → YOLO（毎回実行）</li>
+            <li>コアモデル → グローバル + クロップ深度</li>
+            <li>lstsq 整合 → pre-depth + class map をその場で構築</li>
+            <li>詳細モデル → 最終深度</li>
+          </ul>
+        </div>
+        <div class="arch-card">
+          <h4>学習時（方式A）</h4>
+          <ul>
+            <li>事前保存済みの pre-depth / class_map / valid_mask を読む</li>
+            <li>GT 深度を教師ラベルとして学習</li>
+            <li>YOLO・コアモデルは<strong>学習ループ外</strong>（高速・再現性◎）</li>
+            <li>条件ドロップアウト（確率30%）のみ学習時に適用</li>
+          </ul>
+        </div>
+      </div>
+
+      <h3>学習2の1ステップ（方式A）</h3>
+      <div class="channel-diagram">
+# 学習ループ内（方式A）
+batch = dataloader.next()
+  RGB          ← 元画像
+  GT深度       ← 教師ラベル
+  pre_depth    ← 事前生成済み .npy を読む（推論パイプラインと同一）
+  valid_mask   ← 事前生成済み .npy を読む
+  class_map    ← 事前生成済み .npy を読む
+  → 詳細モデル (UNet 9〜13ch) で GT深度を予測
+  → ROI 重み付き損失 + 勾配損失
+      </div>
+
+      <div class="callout success">
+        <strong>なぜ2段階に分けるか</strong>
+        コア予測と詳細予測を同時に学ぶと、物体条件への過依存や全体深度の劣化が起きやすい。
+        まず全体深度を安定させ、次に物体条件の融合だけを学ぶ方が安全です。
+        詳細モデルはゼロ初期化により、条件なしではコアモデルと同等の出力から始まります。
+      </div>
+
+      <h3>2段階学習の流れ（図）</h3>
+      <div class="pipeline">
+        <div class="pipe-row">
+          <div class="pipe-box process" style="background:#eef2ff;border-color:#a5b4fc;">
+            <strong>学習1回目</strong><br>コア予測モデル
+            <div class="pipe-label">RGB → 全体深度 / 20,000 steps</div>
+          </div>
+        </div>
+        <div class="pipe-arrow">↓ チェックポイントを保存</div>
+        <div class="pipe-row">
+          <div class="pipe-box process" style="background:#fff7ed;border-color:#fdba74;">
+            <strong>オフライン前処理（方式A）</strong>
+            <div class="pipe-label">全データ: YOLO → コア深度 → pre-depth + class_map 保存</div>
+          </div>
+        </div>
+        <div class="pipe-arrow">↓ 固定データセット <code>data/detail_train/</code></div>
+        <div class="pipe-row">
+          <div class="pipe-box process" style="background:#ecfdf5;border-color:#6ee7b7;">
+            <strong>学習2回目</strong><br>詳細予測モデル
+            <div class="pipe-label">事前データを読むだけ / 20,000 steps</div>
+          </div>
+        </div>
+        <div class="pipe-arrow">↓</div>
+        <div class="pipe-row">
+          <div class="pipe-box output">推論: コアモデル + YOLO + 詳細モデル</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. Pipeline -->
+    <section id="pipeline">
+      <h2>3. 推論の全体の流れ（本番）</h2>
+      <p class="lead">推論時は <strong>2つの学習済みモデル</strong> と <strong>YOLO</strong> を組み合わせます。</p>
+
+      <h3>推論パイプライン</h3>
+      <div class="pipeline">
+        <div class="pipe-row">
+          <div class="pipe-box input">RGB 画像</div>
+        </div>
+        <div class="pipe-arrow">↓ 並列処理</div>
+        <div class="pipe-row">
+          <div class="pipe-box process">
+            <strong>コアモデル</strong>（学習1）<br>グローバル深度
+            <div class="pipe-label">全体のベース深度</div>
+          </div>
+          <div class="pipe-box process">
+            YOLO-seg<br>物体検出
+            <div class="pipe-label">bbox / class / mask</div>
+          </div>
+        </div>
+        <div class="pipe-arrow">↓</div>
+        <div class="pipe-row">
+          <div class="pipe-box process">
+            各 bbox を拡張してクロップ
+            <div class="pipe-label">余白 25% 付き</div>
+          </div>
+          <div class="pipe-box process">
+            <strong>コアモデル</strong>でクロップ深度推定
+            <div class="pipe-label">物体ごとのローカル深度</div>
+          </div>
+        </div>
+        <div class="pipe-arrow">↓</div>
+        <div class="pipe-row">
+          <div class="pipe-box process">
+            スケール・シフト整合
+            <div class="pipe-label">グローバル深度に合わせる（急所）</div>
+          </div>
+          <div class="pipe-box process">
+            pre-depth + class map 合成
+            <div class="pipe-label">詳細モデルへの条件入力</div>
+          </div>
+        </div>
+        <div class="pipe-arrow">↓</div>
+        <div class="pipe-row">
+          <div class="pipe-box process" style="background:#ecfdf5;border-color:#6ee7b7;">
+            <strong>詳細モデル</strong>（学習2）<br>物体条件付き深度
+            <div class="pipe-label">RGB + pre-depth + class map</div>
+          </div>
+        </div>
+        <div class="pipe-arrow">↓</div>
+        <div class="pipe-row">
+          <div class="pipe-box output">精緻化された深度画像</div>
+        </div>
+      </div>
+
+      <h3>学習2用データの生成スクリプト（方式A）</h3>
+      <p>
+        新規スクリプト <code>utils/build_detail_train_dataset.py</code> で Step 1〜3 を一括実行します。
+        学習2の DataLoader はこの出力ディレクトリを読む専用実装にします。
+      </p>
+    </section>
+
+    <!-- 4. Status -->
+    <section id="status">
+      <h2>4. 現状と差分</h2>
+      <p class="lead">
+        このリポジトリは公式 Lotus（<code>b737e12</code>）をベースに研究拡張を加えたフォークです。
+        コア学習（<code>train_lotus_g.py</code>）は未変更、Discriminative 学習にオプション追加があります。
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>機能</th>
+            <th>ファイル</th>
+            <th>状態</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>グローバル深度推論</td>
+            <td><code>infer.py</code>, <code>pipeline.py</code></td>
+            <td class="status-done">完了</td>
+          </tr>
+          <tr>
+            <td>YOLO マスク生成</td>
+            <td><code>utils/generate_semantic_masks.py</code></td>
+            <td class="status-done">完了</td>
+          </tr>
+          <tr>
+            <td>bbox 抽出・ROI 融合</td>
+            <td><code>infer_roi_fusion.py</code>, <code>utils/roi_fusion.py</code></td>
+            <td class="status-done">完了</td>
+          </tr>
+          <tr>
+            <td>スケール・シフト整合</td>
+            <td><code>utils/depth_alignment.py</code></td>
+            <td class="status-done">完了</td>
+          </tr>
+          <tr>
+            <td>境界・ROI 評価</td>
+            <td><code>utils/boundary_metrics.py</code>, <code>evaluation/roi_depth_metrics.py</code></td>
+            <td class="status-done">完了</td>
+          </tr>
+          <tr>
+            <td>pre-depth 潜在注入</td>
+            <td><code>utils/pre_depth_fusion.py</code></td>
+            <td class="status-done">完了</td>
+          </tr>
+          <tr>
+            <td>オフライン学習データセット構築（方式A）</td>
+            <td><code>utils/build_detail_train_dataset.py</code></td>
+            <td class="status-todo">未実装（最重要）</td>
+          </tr>
+          <tr>
+            <td>詳細学習用 DataLoader</td>
+            <td><code>utils/detail_train_dataset.py</code></td>
+            <td class="status-todo">未実装</td>
+          </tr>
+          <tr>
+            <td>コア学習（学習1）の専用スクリプト</td>
+            <td><code>train_scripts/train_lotus_d_core.ps1</code></td>
+            <td class="status-todo">未実装（公式スクリプト流用可）</td>
+          </tr>
+          <tr>
+            <td>詳細学習（学習2）の専用スクリプト</td>
+            <td><code>train_scripts/train_lotus_d_detail.ps1</code></td>
+            <td class="status-partial">骨格あり（方式A対応が必要）</td>
+          </tr>
+          <tr>
+            <td>物体単位 pre-depth 合成（オフライン用）</td>
+            <td><code>utils/object_pre_depth.py</code></td>
+            <td class="status-todo">未実装</td>
+          </tr>
+          <tr>
+            <td><strong>ROI 重み付き損失</strong></td>
+            <td>—</td>
+            <td class="status-todo">未実装</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- 5. Architecture -->
+    <section id="architecture">
+      <h2>5. 2つのモデルのアーキテクチャ</h2>
+
+      <h3>モデルA: コア予測（学習1回目）</h3>
+      <div class="channel-diagram">
+<span class="existing">コアモデル UNet 入力 (4ch):</span>  RGB latent (4)
+
+役割: 画像全体の深度。YOLO は使わない。
+初期重み: stabilityai/stable-diffusion-2-base または jingheya/lotus-depth-d-v2-0-disparity
+学習: 標準の train_lotus_d.py（--enable_pre_depth_fusion なし）
+      </div>
+
+      <h3>モデルB: 詳細予測（学習2回目）</h3>
+      <p>コアモデルの重みから開始し、UNet conv_in をゼロ初期化で拡張する。</p>
+      <div class="arch-grid">
+        <div class="arch-card">
+          <h4>① pre-depth マップ</h4>
+          <ul>
+            <li>整合済みローカル深度を貼り込んだマップ</li>
+            <li>VAE latent 4ch + 有効マスク 1ch</li>
+            <li><span class="status-done">既存実装あり</span></li>
+          </ul>
+        </div>
+        <div class="arch-card">
+          <h4>② class map（新規）</h4>
+          <ul>
+            <li>各画素の物体クラス ID（0 = 背景）</li>
+            <li>1ch クラスマップ → VAE encode → 4ch latent</li>
+            <li>重なりは score の高い検出を優先</li>
+          </ul>
+        </div>
+        <div class="arch-card">
+          <h4>③ object stats（任意・将来）</h4>
+          <ul>
+            <li>各 bbox の [class, cx, cy, w, h, depth_median]</li>
+            <li>最大 K 物体を MLP でベクトル化</li>
+            <li>class_labels に加算する方式</li>
+          </ul>
+        </div>
+      </div>
+      <h3>詳細モデルへの条件入力（YOLO 由来）</h3>
+      <div class="channel-diagram">
+<span class="existing">現状 (9ch):</span>  RGB latent (4) + pre-depth latent (4) + valid mask (1)
+
+<span class="new">追加後 (13ch):</span> RGB latent (4) + pre-depth latent (4) + valid mask (1) + <span class="new">class map latent (4)</span>
+
+<span class="existing">詳細モデル UNet 入力 (9ch 基本):</span>  RGB latent (4) + pre-depth latent (4) + valid mask (1)
+
+<span class="new">拡張版 (13ch):</span>  上記 + <span class="new">class map latent (4)</span>  ← YOLO のクラス ID から生成
+
+※ 追加分は <span class="new">ゼロ初期化</span> → 学習2開始時はコアモデルと同一出力
+※ pre-depth は YOLO bbox → コアモデル推定 → 整合合成 で構築（推論時）
+      </div>
+
+      <div class="callout success">
+        <strong>ゼロ初期化の意味（学習2）</strong>
+        詳細モデルは学習開始時、物体条件なしではコアモデルと同じ深度を出力します。
+        学習を進めると YOLO 由来の pre-depth / class 情報を物体領域の精緻化に使い始めます。
+      </div>
+    </section>
+
+    <!-- 6. Phases -->
+    <section id="phases">
+      <h2>6. フェーズ別実装計画</h2>
+      <p class="lead">実装フェーズは2段階学習に対応して再構成しています。</p>
+
+      <div class="phases">
+
+        <div class="phase phase-0">
+          <div class="phase-header">
+            <span class="num">0</span>
+            <span class="title">ベースライン確認</span>
+            <span class="duration">1〜2 日</span>
+          </div>
+          <div class="phase-body">
+            <p>公式モデルと既存コードの動作確認。2段階学習の比較基準を固定。</p>
+            <ul class="task-list">
+              <li>公式 <code>lotus-depth-d-v2-0-disparity</code> で NYUv2 評価</li>
+              <li><code>infer_roi_fusion.py</code> で ROI 融合の上限確認</li>
+              <li>ゼロ初期化等価性テスト（<code>check_pre_depth_zero_init.py</code>）</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="phase phase-1">
+          <div class="phase-header" style="background:#4338ca;">
+            <span class="num">1</span>
+            <span class="title">学習1回目 — コア予測モデル</span>
+            <span class="duration">1〜2 週間</span>
+          </div>
+          <div class="phase-body">
+            <p>RGB のみで全体深度を学習。YOLO は使わない。以降の詳細モデルの土台になる。</p>
+            <ul class="task-list">
+              <li>新規 <code>train_scripts/train_lotus_d_core.ps1</code></li>
+              <li><code>train_lotus_d.py</code>（<code>--enable_pre_depth_fusion</code> なし）</li>
+              <li>初期重み: SD2 Base または公式 Lotus-D（どちらを使うかは判断ポイント参照）</li>
+              <li>出力: <code>output/core-model/checkpoint-XXXXX/</code></li>
+              <li>NYUv2 / Hypersim val でコアモデル単体の精度を記録</li>
+            </ul>
+            <div class="criteria">
+              <strong>成功基準:</strong> 公式 Lotus-D と同等以上の全体 abs_rel。ここが安定してから学習2へ。
+            </div>
+          </div>
+        </div>
+
+        <div class="phase phase-2">
+          <div class="phase-header" style="background:#c2410c;">
+            <span class="num">2</span>
+            <span class="title">方式A — オフライン学習データセット構築</span>
+            <span class="duration">3〜7 日</span>
+          </div>
+          <div class="phase-body">
+            <p>学習2の前に、全学習データへ推論パイプラインと同じ処理を1回実行し、固定データセットを作る。</p>
+            <ul class="task-list">
+              <li>新規 <code>utils/build_detail_train_dataset.py</code> — Step 1〜3 の一括実行</li>
+              <li>Step 1: 全データに YOLO → <code>detections.json</code> + mask PNG</li>
+              <li>Step 2: コアモデルで global + crop 深度 → lstsq 整合 → <code>pre_depth.npy</code> + <code>valid_mask.npy</code></li>
+              <li>Step 3: YOLO クラスから <code>class_map.npy</code> を生成</li>
+              <li>新規 <code>utils/object_pre_depth.py</code> — Step 2 の合成ロジック</li>
+              <li>新規 <code>utils/detail_train_dataset.py</code> — 事前データを読む DataLoader</li>
+              <li>出力先: <code>data/detail_train/</code></li>
+            </ul>
+            <div class="criteria">
+              <strong>成功基準:</strong> 全学習画像に pre_depth / valid_mask / class_map が揃い、目視で妥当なこと
+            </div>
+          </div>
+        </div>
+
+        <div class="phase phase-3">
+          <div class="phase-header" style="background:#047857;">
+            <span class="num">3</span>
+            <span class="title">学習2回目 — 詳細予測モデル</span>
+            <span class="duration">1〜2 週間</span>
+          </div>
+          <div class="phase-body">
+            <p>コアモデルの重みから開始。<strong>事前構築済みデータセット</strong>を読み込んで学習。YOLO はループ内で実行しない。</p>
+            <ul class="task-list">
+              <li>新規 <code>train_scripts/train_lotus_d_detail.ps1</code></li>
+              <li>初期重み: 学習1の <code>output/core-model/</code></li>
+              <li>改修 <code>train_lotus_d.py</code> — <code>--detail_train_data_dir</code> で事前データを読む</li>
+              <li><code>--enable_pre_depth_fusion</code> + <code>--enable_object_condition</code></li>
+              <li>条件ドロップアウト（30%）: 学習時のみ pre-depth をゼロ化（推論時 YOLO なし対策）</li>
+              <li>ROI 重み付き損失 + 勾配損失</li>
+            </ul>
+            <div class="criteria">
+              <strong>成功基準:</strong> ROI abs_rel / boundary F1 がコアモデル単体を上回る。全体 abs_rel は ±5% 以内。
+            </div>
+          </div>
+        </div>
+
+        <div class="phase phase-4">
+          <div class="phase-header">
+            <span class="num">4</span>
+            <span class="title">推論統合と評価</span>
+            <span class="duration">3〜5 日</span>
+          </div>
+          <div class="phase-body">
+            <p>コア + YOLO + 詳細の3段推論を統合し、5条件で比較評価。</p>
+            <ul class="task-list">
+              <li>新規 <code>infer_object_refined_depth.py</code></li>
+              <li>比較: 公式 / コアのみ / ROI融合 / 詳細（YOLOあり）/ 詳細（YOLOなし）</li>
+              <li>Hypersim 1024×768 + 高解像度 in-the-wild で主評価</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="phase phase-4">
+          <div class="phase-header" style="background:#7c3aed;">
+            <span class="num">5</span>
+            <span class="title">アブレーション（必要時）</span>
+            <span class="duration">1 週間</span>
+          </div>
+          <div class="phase-body">
+            <p>効果が不十分な場合の切り分け実験。</p>
+            <table>
+              <thead>
+                <tr><th>変数</th><th>候補</th><th>目的</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>検出器</td><td>YOLOv8n → yolov8x-seg / SAM</td><td>マスク品質</td></tr>
+                <tr><td>マスクソース</td><td>YOLO / Hypersim GT semantic</td><td>上限確認</td></tr>
+                <tr><td>条件ドロップアウト</td><td>0.2 / 0.3 / 0.5</td><td>過依存防止</td></tr>
+                <tr><td>ROI 損失重み</td><td>1.0 / 2.0 / 5.0</td><td>物体 vs 全体バランス</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- 7. Files -->
+    <section id="files">
+      <h2>7. ファイル変更一覧</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>ファイル</th>
+            <th>操作</th>
+            <th>対象</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><code>utils/build_detail_train_dataset.py</code></td><td>新規</td><td>方式A（最重要）</td></tr>
+          <tr><td><code>utils/detail_train_dataset.py</code></td><td>新規</td><td>学習2 DataLoader</td></tr>
+          <tr><td><code>train_scripts/train_lotus_d_core.ps1</code></td><td>新規</td><td>学習1（コア）</td></tr>
+          <tr><td><code>train_scripts/train_lotus_d_detail.ps1</code></td><td>新規</td><td>学習2（詳細）</td></tr>
+          <tr><td><code>utils/object_pre_depth.py</code></td><td>新規</td><td>Step2 pre-depth 合成</td></tr>
+          <tr><td><code>utils/object_condition.py</code></td><td>新規</td><td>Step3 class_map</td></tr>
+          <tr><td><code>infer_object_refined_depth.py</code></td><td>新規</td><td>推論統合</td></tr>
+          <tr><td><code>utils/generate_semantic_masks.py</code></td><td>改修</td><td>Step1 YOLO JSON</td></tr>
+          <tr><td><code>infer_roi_fusion.py</code></td><td>改修</td><td>Step2 と推論共有</td></tr>
+          <tr><td><code>train_lotus_d.py</code></td><td>改修</td><td>detail_train_data_dir 対応</td></tr>
+          <tr><td><code>pipeline.py</code></td><td>改修</td><td>詳細モデル推論</td></tr>
+          <tr><td><code>utils/pre_depth_synth.py</code></td><td>廃止予定</td><td>方式Aでは不使用</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- 8. Schedule -->
+    <section id="schedule">
+      <h2>8. スケジュール</h2>
+      <div class="timeline">
+        <div class="tl-item" style="background: var(--phase0)">フェーズ0<small>1〜2日</small></div>
+        <div class="tl-item" style="background:#4338ca;">学習1<small>1〜2週間</small></div>
+        <div class="tl-item" style="background:#c2410c;">方式A<small>3〜7日</small></div>
+        <div class="tl-item" style="background:#047857;">学習2<small>1〜2週間</small></div>
+        <div class="tl-item" style="background: var(--phase3)">統合評価<small>3〜5日</small></div>
+      </div>
+      <p><strong>合計: 約 4〜6 週間</strong>（学習2回 + 方式A データ構築 + 評価）</p>
+
+      <h3>着手順（優先度）</h3>
+      <ol style="padding-left: 1.25rem; font-size: 0.95rem;">
+        <li><strong>学習1</strong> — コア予測モデルを学習（または公式重みをコアとして採用）</li>
+        <li><strong>方式A</strong> — <code>build_detail_train_dataset.py</code> で全データの pre-depth / class_map を事前生成</li>
+        <li><strong>学習2</strong> — 事前データを読むだけで詳細モデルを学習</li>
+        <li><strong>統合推論</strong> — コア + YOLO（毎回） + 詳細の end-to-end 評価</li>
+      </ol>
+    </section>
+
+    <!-- 9. Risks -->
+    <section id="risks">
+      <h2>9. リスクと対策</h2>
+      <div class="risk-grid">
+        <div class="risk-item">
+          <div class="risk">学習1（コア）が不安定</div>
+          <div class="mitigation">公式 Lotus-D 重みをコアとして流用する選択肢を残す</div>
+        </div>
+        <div class="risk-item">
+          <div class="risk">方式A の前処理に時間がかかる</div>
+          <div class="mitigation">1回だけ実行。増分更新（新画像のみ再生成）に対応</div>
+        </div>
+        <div class="risk-item">
+          <div class="risk">コアモデル更新時に pre-depth を再生成が必要</div>
+          <div class="mitigation">コアモデルを固定してから方式Aを実行。バージョンをディレクトリ名に含める</div>
+        </div>
+        <div class="risk-item">
+          <div class="risk">YOLO が Hypersim で検出漏れ</div>
+          <div class="mitigation">オフライン生成結果を目視確認。GT semantic 版も別途用意して上限比較</div>
+        </div>
+        <div class="risk-item">
+          <div class="risk">学習2でコア性能が劣化</div>
+          <div class="mitigation">ゼロ初期化 + 条件ドロップアウト + コア単体精度の常時監視</div>
+        </div>
+        <div class="risk-item">
+          <div class="risk">NYUv2 では解像度不足で改善しない</div>
+          <div class="mitigation">Hypersim val + 高解像度 in-the-wild を主評価に</div>
+        </div>
+        <div class="risk-item">
+          <div class="risk">推論が遅い（YOLO + N クロップ × 2モデル）</div>
+          <div class="mitigation">Top-K 物体。学習時は事前データ読込、推論時のみ YOLO + コアモデルを実行</div>
+        </div>
+        <div class="risk-item">
+          <div class="risk">クロップ深度のスケール不整合</div>
+          <div class="mitigation">貼り込み前に必ず lstsq 整合（フェーズ1で実証済み）</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 10. Decisions -->
+    <section id="decisions">
+      <h2>10. 実装前の判断ポイント</h2>
+
+      <h3>学習1: コアモデルの出発点</h3>
+      <table>
+        <thead><tr><th>方式</th><th>特徴</th><th>推奨</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>A: 公式 Lotus-D をコアとして採用</strong></td>
+            <td>学習1をスキップでき、すぐ学習2に進める。研究の独自性は学習2に集約。</td>
+            <td class="status-done">時間短縮向け</td>
+          </tr>
+          <tr>
+            <td><strong>B: SD2 Base からコアを自前学習</strong></td>
+            <td>データ・設定を完全にコントロール。2段階が明確になる。</td>
+            <td>論文で学習過程を示す場合</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>クラス条件の形式（学習2）</h3>
+      <table>
+        <thead><tr><th>方式</th><th>特徴</th><th>推奨</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>A: class map</strong></td>
+            <td>画素ごとのクラス ID マップ。空間情報あり。</td>
+            <td class="status-done">まずこちら</td>
+          </tr>
+          <tr>
+            <td><strong>B: object stats</strong></td>
+            <td>bbox + class + depth のベクトル。シンプルだが空間情報は間接的。</td>
+            <td>効果が薄い場合に追加</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>学習2のデータ準備方針</h3>
+      <table>
+        <thead><tr><th>方式</th><th>特徴</th><th>採用</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>方式A: オフライン固定データセット</strong></td>
+            <td>全データに YOLO + コアモデル推論を1回実行し pre-depth / class_map を保存。推論と同一条件。</td>
+            <td class="status-done">採用（本計画）</td>
+          </tr>
+          <tr>
+            <td>方式B: 学習時擬似合成</td>
+            <td>GT 深度を劣化させて pre-depth をその場生成。高速だが推論条件とずれる。</td>
+            <td class="status-todo">不採用</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>学習2の YOLO マスクソース（方式A 内）</h3>
+      <table>
+        <thead><tr><th>方式</th><th>特徴</th><th>推奨</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>A: YOLO 事前生成</strong></td>
+            <td>実写向け。方式A の Step 1 で全データに実行して固定化。</td>
+            <td class="status-done">本番用</td>
+          </tr>
+          <tr>
+            <td><strong>B: Hypersim GT semantic</strong></td>
+            <td>オラクル品質。方式A の別バージョンとして上限確認用に生成。</td>
+            <td>上限比較用</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>評価の主戦場</h3>
+      <div class="callout info">
+        NYUv2（640×480）は<strong>参考程度</strong>。
+        主指標は <strong>Hypersim val（1024×768）</strong> と <strong>高解像度 in-the-wild 画像</strong> とする。
+      </div>
+    </section>
+
+  </main>
+
+  <footer>
+    <p>Lotus 深度推定研究 — 2段階学習（コア予測 + 詳細予測）実装計画</p>
+    <p>関連ドキュメント: <code>docs/pre_depth_improvement_plan.md</code> · <code>docs/phase1_results.md</code></p>
+  </footer>
+
+</body>
+</html>

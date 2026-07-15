@@ -56,6 +56,7 @@ from utils.image_utils import concatenate_images, colorize_depth_map
 from utils.hypersim_dataset import get_hypersim_dataset_depth_normal
 from utils.pre_depth_fusion import downsample_valid_mask, encode_pre_depth_latents, expand_unet_conv_in
 from utils.pre_depth_synth import synthesize_pre_depth
+from utils.detail_train_dataset import get_detail_train_dataset
 from utils.vkitti_dataset import VKITTIDataset, VKITTITransform, collate_fn_vkitti
 
 from eval import evaluation_depth, evaluation_normal
@@ -112,6 +113,21 @@ def multiscale_gradient_loss(
         loss = loss + 0.5 * (lx + ly)
         n += 1
     return loss / max(n, 1)
+
+
+def apply_pre_depth_dropout(
+    pre_depth: torch.Tensor,
+    valid_mask: torch.Tensor,
+    dropout_p: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if dropout_p <= 0:
+        return pre_depth, valid_mask
+    bsz = pre_depth.shape[0]
+    device = pre_depth.device
+    drop = (torch.rand((bsz, 1, 1, 1), device=device) < dropout_p).float()
+    keep = 1.0 - drop
+    return pre_depth * keep, valid_mask * keep
+
 
 def run_example_validation(pipeline, task, args, step, accelerator, generator):
     validation_images = glob(os.path.join(args.validation_images, "*.jpg")) + glob(os.path.join(args.validation_images, "*.png"))
@@ -467,6 +483,18 @@ def parse_args():
         help="The normalization type of the depth. "
     )
     parser.add_argument(
+        "--unet_model_name_or_path",
+        type=str,
+        default=None,
+        help="Optional separate UNet checkpoint (e.g. core model output). VAE/text encoder still load from --pretrained_model_name_or_path.",
+    )
+    parser.add_argument(
+        "--detail_train_data_dir",
+        type=str,
+        default=None,
+        help="Approach-A offline detail dataset root (pre-depth / valid_mask / class_map).",
+    )
+    parser.add_argument(
         "--enable_pre_depth_fusion",
         action="store_true",
         help="Enable Phase-2 pre-depth latent fusion (UNet conv_in expansion + synthetic pre-depth condition).",
@@ -801,11 +829,37 @@ def main():
             args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant=args.variant
         )
 
-    unet = UNet2DConditionModel.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="unet", revision=args.non_ema_revision,
-        class_embed_type="projection", projection_class_embeddings_input_dim=4, # Important! new projection layer will be initailized.
-        low_cpu_mem_usage=False, device_map=None,
-    )
+    if args.unet_model_name_or_path:
+        unet_source_path = Path(args.unet_model_name_or_path)
+        if (unet_source_path / "unet").is_dir():
+            unet = UNet2DConditionModel.from_pretrained(
+                str(unet_source_path),
+                subfolder="unet",
+                revision=args.non_ema_revision,
+                class_embed_type="projection",
+                projection_class_embeddings_input_dim=4,
+                low_cpu_mem_usage=False,
+                device_map=None,
+            )
+        else:
+            unet = UNet2DConditionModel.from_pretrained(
+                str(unet_source_path),
+                revision=args.non_ema_revision,
+                class_embed_type="projection",
+                projection_class_embeddings_input_dim=4,
+                low_cpu_mem_usage=False,
+                device_map=None,
+            )
+    else:
+        unet = UNet2DConditionModel.from_pretrained(
+            args.pretrained_model_name_or_path,
+            subfolder="unet",
+            revision=args.non_ema_revision,
+            class_embed_type="projection",
+            projection_class_embeddings_input_dim=4,
+            low_cpu_mem_usage=False,
+            device_map=None,
+        )
     if args.enable_pre_depth_fusion:
         # 4ch RGB latent -> 9ch [RGB latent(4) + pre-depth latent(4) + valid-mask(1)].
         expand_unet_conv_in(unet, extra_in_channels=5, zero_init=True)
@@ -890,45 +944,70 @@ def main():
     )
 
     # Get the datasets and dataloaders
-    # -------------------- Dataset1: Hypersim --------------------
-    train_hypersim_dataset, preprocess_train_hypersim, collate_fn_hypersim = get_hypersim_dataset_depth_normal(
-        args.train_data_dir_hypersim, args.resolution_hypersim, args.random_flip, 
-        norm_type=args.norm_type, truncnorm_min=args.truncnorm_min, align_cam_normal=args.align_cam_normal
+    use_detail_dataset = args.detail_train_data_dir is not None and len(str(args.detail_train_data_dir).strip()) > 0
+    if use_detail_dataset:
+        if not args.enable_pre_depth_fusion:
+            raise ValueError("--detail_train_data_dir requires --enable_pre_depth_fusion")
+        train_detail_dataset, preprocess_train_detail, collate_fn_detail = get_detail_train_dataset(
+            args.train_data_dir_hypersim,
+            args.detail_train_data_dir,
+            args.resolution_hypersim,
+            args.random_flip,
+            norm_type=args.norm_type,
+            truncnorm_min=args.truncnorm_min,
+            align_cam_normal=args.align_cam_normal,
         )
-    with accelerator.main_process_first():
-        if args.max_train_samples is not None:
-            train_hypersim_dataset = train_hypersim_dataset.shuffle(seed=args.seed).select(range(args.max_train_samples))
-        # Set the training transforms
-        train_dataset_hypersim = train_hypersim_dataset.with_transform(preprocess_train_hypersim)
-    
-    train_dataloader_hypersim = torch.utils.data.DataLoader(
-        train_dataset_hypersim,
-        shuffle=True,
-        collate_fn=collate_fn_hypersim,
-        batch_size=args.train_batch_size,
-        num_workers=args.dataloader_num_workers,
-        pin_memory=True
-    )
-    # -------------------- Dataset2: VKITTI --------------------
-    if args.mix_dataset:
-        if args.train_data_dir_vkitti is None or len(str(args.train_data_dir_vkitti).strip()) == 0:
-            raise ValueError("--mix_dataset requires --train_data_dir_vkitti to be set.")
-        transform_vkitti = VKITTITransform(random_flip=args.random_flip)
-        train_dataset_vkitti = VKITTIDataset(
-            args.train_data_dir_vkitti, transform_vkitti, args.norm_type, truncnorm_min=args.truncnorm_min
-        )
-        train_dataloader_vkitti = torch.utils.data.DataLoader(
-            train_dataset_vkitti,
+        train_dataset_hypersim = train_detail_dataset
+        train_dataloader_hypersim = torch.utils.data.DataLoader(
+            train_dataset_hypersim,
             shuffle=True,
-            collate_fn=collate_fn_vkitti,
+            collate_fn=collate_fn_detail,
             batch_size=args.train_batch_size,
             num_workers=args.dataloader_num_workers,
             pin_memory=True,
         )
-    else:
-        train_dataset_vkitti = []
-        # Keep a valid dataloader object for accelerator.prepare and loop initialization.
         train_dataloader_vkitti = train_dataloader_hypersim
+        train_dataset_vkitti = []
+    else:
+        # -------------------- Dataset1: Hypersim --------------------
+        train_hypersim_dataset, preprocess_train_hypersim, collate_fn_hypersim = get_hypersim_dataset_depth_normal(
+            args.train_data_dir_hypersim, args.resolution_hypersim, args.random_flip, 
+            norm_type=args.norm_type, truncnorm_min=args.truncnorm_min, align_cam_normal=args.align_cam_normal
+            )
+        with accelerator.main_process_first():
+            if args.max_train_samples is not None:
+                train_hypersim_dataset = train_hypersim_dataset.shuffle(seed=args.seed).select(range(args.max_train_samples))
+            # Set the training transforms
+            train_dataset_hypersim = train_hypersim_dataset.with_transform(preprocess_train_hypersim)
+        
+        train_dataloader_hypersim = torch.utils.data.DataLoader(
+            train_dataset_hypersim,
+            shuffle=True,
+            collate_fn=collate_fn_hypersim,
+            batch_size=args.train_batch_size,
+            num_workers=args.dataloader_num_workers,
+            pin_memory=True
+        )
+        # -------------------- Dataset2: VKITTI --------------------
+        if args.mix_dataset:
+            if args.train_data_dir_vkitti is None or len(str(args.train_data_dir_vkitti).strip()) == 0:
+                raise ValueError("--mix_dataset requires --train_data_dir_vkitti to be set.")
+            transform_vkitti = VKITTITransform(random_flip=args.random_flip)
+            train_dataset_vkitti = VKITTIDataset(
+                args.train_data_dir_vkitti, transform_vkitti, args.norm_type, truncnorm_min=args.truncnorm_min
+            )
+            train_dataloader_vkitti = torch.utils.data.DataLoader(
+                train_dataset_vkitti,
+                shuffle=True,
+                collate_fn=collate_fn_vkitti,
+                batch_size=args.train_batch_size,
+                num_workers=args.dataloader_num_workers,
+                pin_memory=True,
+            )
+        else:
+            train_dataset_vkitti = []
+            # Keep a valid dataloader object for accelerator.prepare and loop initialization.
+            train_dataloader_vkitti = train_dataloader_hypersim
     
     # Lr_scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -988,7 +1067,9 @@ def main():
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
-    logger.info(f"  Num examples Hypersim = {len(train_dataset_hypersim)}")
+    logger.info(f"  Using detail train dataset (Approach A): {use_detail_dataset}")
+    if use_detail_dataset:
+        logger.info(f"  Detail artifact dir: {args.detail_train_data_dir}")
     logger.info(f"  Num examples VKITTI = {len(train_dataset_vkitti)}")
     logger.info(f"  Using mix datasets: {args.mix_dataset}")
     logger.info(f"  Dataset alternation probability of Hypersim = {args.prob_hypersim}")
@@ -1123,21 +1204,30 @@ def main():
                 # Get the unet input
                 unet_input = rgb_latents
                 if args.enable_pre_depth_fusion:
-                    gt_depth_norm = batch[TAR_ANNO][:bsz_per_task].to(weight_dtype)
-                    valid_mask_for_pre = batch.get("valid_mask_values", None)
-                    if valid_mask_for_pre is not None:
-                        valid_mask_for_pre = valid_mask_for_pre[:bsz_per_task].to(weight_dtype)
+                    if batch.get("pre_depth_values") is not None:
+                        pre_depth_anno = batch["pre_depth_values"][:bsz_per_task].to(weight_dtype)
+                        if pre_depth_anno.shape[1] == 1:
+                            pre_depth_anno = pre_depth_anno.repeat(1, 3, 1, 1)
+                        pre_valid_anno = batch["pre_depth_valid_mask"][:bsz_per_task].to(weight_dtype)
+                        pre_depth_anno, pre_valid_anno = apply_pre_depth_dropout(
+                            pre_depth_anno, pre_valid_anno, args.pre_depth_dropout_p
+                        )
+                    else:
+                        gt_depth_norm = batch[TAR_ANNO][:bsz_per_task].to(weight_dtype)
+                        valid_mask_for_pre = batch.get("valid_mask_values", None)
+                        if valid_mask_for_pre is not None:
+                            valid_mask_for_pre = valid_mask_for_pre[:bsz_per_task].to(weight_dtype)
 
-                    pre_depth_anno, pre_valid_anno = synthesize_pre_depth(
-                        gt_depth_norm,
-                        valid_mask=valid_mask_for_pre,
-                        dropout_p=args.pre_depth_dropout_p,
-                        affine_scale_jitter=args.pre_depth_scale_jitter,
-                        affine_shift_jitter=args.pre_depth_shift_jitter,
-                        blur_sigma_max=args.pre_depth_blur_sigma_max,
-                        hole_keep_p=args.pre_depth_hole_keep_p,
-                        noise_std=args.pre_depth_noise_std,
-                    )
+                        pre_depth_anno, pre_valid_anno = synthesize_pre_depth(
+                            gt_depth_norm,
+                            valid_mask=valid_mask_for_pre,
+                            dropout_p=args.pre_depth_dropout_p,
+                            affine_scale_jitter=args.pre_depth_scale_jitter,
+                            affine_shift_jitter=args.pre_depth_shift_jitter,
+                            blur_sigma_max=args.pre_depth_blur_sigma_max,
+                            hole_keep_p=args.pre_depth_hole_keep_p,
+                            noise_std=args.pre_depth_noise_std,
+                        )
                     # Reconstruction branch gets zero pre-depth condition by default.
                     pre_depth_rgb = torch.zeros_like(pre_depth_anno)
                     pre_valid_rgb = torch.zeros_like(pre_valid_anno)
