@@ -16,7 +16,7 @@ from tqdm.auto import tqdm
 
 from pipeline import LotusDPipeline
 from utils.image_utils import colorize_depth_map
-from utils.object_condition import rasterize_class_map
+from utils.object_condition import class_map_to_tensor, rasterize_class_map
 from utils.object_detection_cache import load_yolo_model, run_yolo_detections
 from utils.object_pre_depth import CoreDepthPredictor, disparity_pred_to_norm
 from utils.seed_all import seed_all
@@ -37,10 +37,11 @@ def parse_args():
     p.add_argument("--disparity", action="store_true")
     p.add_argument("--half_precision", action="store_true")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--max_images", type=int, default=0, help="If >0, only process first N images.")
     return p.parse_args()
 
 
-def predict_with_pre_depth(pipe, rgb_np, pre_depth_norm, valid_mask, args, generator):
+def predict_with_pre_depth(pipe, rgb_np, pre_depth_norm, valid_mask, class_map, args, generator):
     device = pipe.device
     image = torch.from_numpy(rgb_np.astype(np.float32)).permute(2, 0, 1).unsqueeze(0)
     image = image / 127.5 - 1.0
@@ -50,6 +51,12 @@ def predict_with_pre_depth(pipe, rgb_np, pre_depth_norm, valid_mask, args, gener
     pre_t = pre_t.repeat(1, 3, 1, 1).to(device=device, dtype=image.dtype)
     valid_t = torch.from_numpy(valid_mask.astype(np.float32)).unsqueeze(0).unsqueeze(0).to(device=device, dtype=image.dtype)
 
+    extra_channels = pipe.unet.config.in_channels - 4
+    class_t = None
+    if extra_channels == 9 and class_map is not None:
+        class_norm = class_map_to_tensor(class_map)
+        class_t = torch.from_numpy(class_norm).unsqueeze(0).unsqueeze(0).to(device=device, dtype=image.dtype)
+
     task_emb = torch.tensor([1, 0], device=device).float().unsqueeze(0)
     task_emb = torch.cat([torch.sin(task_emb), torch.cos(task_emb)], dim=-1)
 
@@ -58,20 +65,24 @@ def predict_with_pre_depth(pipe, rgb_np, pre_depth_norm, valid_mask, args, gener
     else:
         autocast_ctx = torch.autocast(device_type=device.type)
 
+    pipe_kwargs = dict(
+        rgb_in=image,
+        pre_depth=pre_t,
+        pre_depth_valid_mask=valid_t,
+        prompt="",
+        num_inference_steps=1,
+        generator=generator,
+        output_type="np",
+        timesteps=[args.timestep],
+        task_emb=task_emb,
+        processing_res=args.processing_res,
+        match_input_res=True,
+    )
+    if class_t is not None:
+        pipe_kwargs["class_map"] = class_t
+
     with autocast_ctx:
-        pred = pipe(
-            rgb_in=image,
-            pre_depth=pre_t,
-            pre_depth_valid_mask=valid_t,
-            prompt="",
-            num_inference_steps=1,
-            generator=generator,
-            output_type="np",
-            timesteps=[args.timestep],
-            task_emb=task_emb,
-            processing_res=args.processing_res,
-            match_input_res=True,
-        ).images[0]
+        pred = pipe(**pipe_kwargs).images[0]
     return pred.mean(axis=-1).astype(np.float32)
 
 
@@ -93,6 +104,8 @@ def main():
     core_predictor = CoreDepthPredictor(core_pipe, timestep=args.timestep, processing_res=args.processing_res, generator=generator)
 
     images = sorted(list(Path(args.input_dir).rglob("*.png")) + list(Path(args.input_dir).rglob("*.jpg")))
+    if args.max_images and args.max_images > 0:
+        images = images[: args.max_images]
     out_depth = Path(args.output_dir) / "depth"
     out_vis = Path(args.output_dir) / "depth_vis"
     out_pre = Path(args.output_dir) / "pre_depth"
@@ -108,7 +121,11 @@ def main():
             roi_expand_ratio=args.roi_expand_ratio,
             align_mode=args.align_mode,
         )
-        refined = predict_with_pre_depth(detail_pipe, rgb_np, pre_depth_norm, valid_mask, args, generator)
+        h, w = rgb_np.shape[:2]
+        class_map = rasterize_class_map(detections, h, w)
+        refined = predict_with_pre_depth(
+            detail_pipe, rgb_np, pre_depth_norm, valid_mask, class_map, args, generator
+        )
 
         stem = image_path.stem
         np.save(out_depth / f"{stem}.npy", refined)

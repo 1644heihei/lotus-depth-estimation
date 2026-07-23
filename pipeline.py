@@ -1023,6 +1023,7 @@ class LotusDPipeline(DirectDiffusionPipeline):
         task_emb: Optional[torch.FloatTensor] = None,
         pre_depth: Optional[torch.FloatTensor] = None,
         pre_depth_valid_mask: Optional[torch.FloatTensor] = None,
+        class_map: Optional[torch.FloatTensor] = None,
         prompt: Union[str, List[str]] = None,
         timesteps: List[int] = None,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
@@ -1048,6 +1049,9 @@ class LotusDPipeline(DirectDiffusionPipeline):
                 shape [B, 1, H, W] or [B, 3, H, W].
             pre_depth_valid_mask (`torch.FloatTensor`, *optional*):
                 Optional valid mask for pre-depth, shape [B, 1, H, W]. Values > 0.5 are treated as valid.
+            class_map (`torch.FloatTensor`, *optional*):
+                Optional class-map condition in normalized range (typically [-1, 1]),
+                shape [B, 1, H, W] or [B, 3, H, W]. Used when UNet expects 13 input channels.
             prompt (`str` or `List[str]`, *optional*):
                 The prompt or prompts to guide image generation. If not defined, you need to pass `prompt_embeds`.
             timesteps (`List[int]`, *optional*):
@@ -1135,7 +1139,7 @@ class LotusDPipeline(DirectDiffusionPipeline):
         expected_in_channels = self.unet.config.in_channels
         if expected_in_channels > rgb_latents.shape[1]:
             extra_channels = expected_in_channels - rgb_latents.shape[1]
-            if extra_channels == 5:
+            if extra_channels in (5, 9):
                 if pre_depth is None:
                     pre_depth = torch.zeros(
                         (rgb_in.shape[0], 1, rgb_in.shape[-2], rgb_in.shape[-1]),
@@ -1164,6 +1168,21 @@ class LotusDPipeline(DirectDiffusionPipeline):
                     target_hw=pre_depth_latents.shape[-2:],
                 ).to(dtype=pre_depth_latents.dtype)
                 latent_model_input = torch.cat([rgb_latents, pre_depth_latents, pre_depth_mask_lat], dim=1)
+                if extra_channels == 9:
+                    if class_map is None:
+                        class_map = torch.zeros(
+                            (rgb_in.shape[0], 1, rgb_in.shape[-2], rgb_in.shape[-1]),
+                            device=device,
+                            dtype=rgb_in.dtype,
+                        )
+                    else:
+                        class_map = class_map.to(device=device, dtype=rgb_in.dtype)
+                        if class_map.shape[-2:] != rgb_in.shape[-2:]:
+                            class_map = F.interpolate(
+                                class_map, size=rgb_in.shape[-2:], mode="nearest"
+                            )
+                    class_map_latents = encode_pre_depth_latents(self.vae, class_map)
+                    latent_model_input = torch.cat([latent_model_input, class_map_latents], dim=1)
             else:
                 # Fallback for unexpected channel counts: append zeros.
                 zeros = torch.zeros(

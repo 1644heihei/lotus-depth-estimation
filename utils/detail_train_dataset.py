@@ -11,7 +11,8 @@ import torch.nn.functional as F
 from PIL import Image
 
 from utils.hypersim_dataset import HypersimImageDepthNormalTransform, get_hypersim_dataset_depth_normal
-from utils.object_condition import class_map_path, class_map_to_tensor
+from utils.object_condition import class_map_path, class_map_to_tensor, rasterize_class_map
+from utils.object_detection_cache import detections_to_mask, load_detections
 from utils.object_pre_depth import load_pre_depth_artifacts, pre_depth_path, valid_mask_path
 
 
@@ -73,10 +74,12 @@ class DetailTrainDataset(torch.utils.data.Dataset):
         depth_paths: Optional[List[str]] = None,
         rgb_paths: Optional[List[str]] = None,
         require_artifacts: bool = True,
+        detection_score_thr: float = 0.5,
     ):
         self.rgb_root = Path(rgb_root)
         self.detail_root = Path(detail_root)
         self.transform = transform
+        self.detection_score_thr = float(detection_score_thr)
 
         if rgb_paths is None:
             rgb_paths = [str(p) for p in list_rgb_images(self.rgb_root)]
@@ -123,12 +126,29 @@ class DetailTrainDataset(torch.utils.data.Dataset):
         pixel_values, depth_values, normal_values = self.transform(image, depth, fallback_normal)
 
         pre_depth, valid_mask = load_pre_depth_artifacts(rgb_path, self.detail_root)
-        class_map = np.load(class_map_path(rgb_path, self.detail_root))
+        if pre_depth is None or valid_mask is None:
+            raise FileNotFoundError(f"Missing pre-depth artifacts for {rgb_path}")
+
+        # Training-time score filter: keep only high-confidence detections for
+        # valid_mask / class_map. Offline pre_depth.npy stays as-is; regions that
+        # fail the threshold are marked invalid so they are not used as condition.
+        if self.detection_score_thr > 0:
+            detections = [
+                d
+                for d in load_detections(rgb_path, self.detail_root)
+                if d.score >= self.detection_score_thr
+            ]
+            h0, w0 = valid_mask.shape[:2]
+            keep = detections_to_mask(detections, h0, w0)
+            valid_mask = (valid_mask.astype(np.float32) * keep).astype(np.float32)
+            class_map = rasterize_class_map(detections, h0, w0)
+        else:
+            class_map = np.load(class_map_path(rgb_path, self.detail_root))
 
         pre_depth_t = self._resize_map(pre_depth, pixel_values.shape[-2:])
         valid_mask_t = self._resize_map(valid_mask, pixel_values.shape[-2:])
         class_map_t = self._resize_map(class_map.astype(np.float32), pixel_values.shape[-2:], nearest=True)
-        class_map_norm = torch.from_numpy(class_map_to_tensor(class_map_t)).unsqueeze(0)
+        class_map_norm = torch.from_numpy(class_map_to_tensor(class_map_t.numpy())).unsqueeze(0)
 
         return {
             "pixel_values": pixel_values,
@@ -159,6 +179,7 @@ def get_detail_train_dataset(
     norm_type: str,
     truncnorm_min: float = 0.02,
     align_cam_normal: bool = False,
+    detection_score_thr: float = 0.5,
 ):
     """Build detail-train dataset using Hypersim index when possible."""
     if rgb_root.startswith("hf://"):
@@ -216,6 +237,7 @@ def get_detail_train_dataset(
         rgb_paths=rgb_paths,
         depth_paths=depth_paths,
         require_artifacts=True,
+        detection_score_thr=detection_score_thr,
     )
 
     def preprocess_noop(examples):

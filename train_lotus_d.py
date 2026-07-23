@@ -119,14 +119,18 @@ def apply_pre_depth_dropout(
     pre_depth: torch.Tensor,
     valid_mask: torch.Tensor,
     dropout_p: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    *extra_maps: torch.Tensor,
+) -> tuple[torch.Tensor, ...]:
     if dropout_p <= 0:
-        return pre_depth, valid_mask
+        return (pre_depth, valid_mask, *extra_maps)
     bsz = pre_depth.shape[0]
     device = pre_depth.device
     drop = (torch.rand((bsz, 1, 1, 1), device=device) < dropout_p).float()
     keep = 1.0 - drop
-    return pre_depth * keep, valid_mask * keep
+    outs = [pre_depth * keep, valid_mask * keep]
+    for m in extra_maps:
+        outs.append(m * keep)
+    return tuple(outs)
 
 
 def run_example_validation(pipeline, task, args, step, accelerator, generator):
@@ -495,9 +499,20 @@ def parse_args():
         help="Approach-A offline detail dataset root (pre-depth / valid_mask / class_map).",
     )
     parser.add_argument(
+        "--detection_score_thr",
+        type=float,
+        default=0.5,
+        help="At train time, keep only YOLO detections with score >= this for valid_mask/class_map.",
+    )
+    parser.add_argument(
         "--enable_pre_depth_fusion",
         action="store_true",
         help="Enable Phase-2 pre-depth latent fusion (UNet conv_in expansion + synthetic pre-depth condition).",
+    )
+    parser.add_argument(
+        "--enable_object_condition",
+        action="store_true",
+        help="Append class-map latent (4ch) after pre-depth fusion (9ch -> 13ch). Requires --enable_pre_depth_fusion.",
     )
     parser.add_argument(
         "--pre_depth_dropout_p",
@@ -540,6 +555,11 @@ def parse_args():
         type=float,
         default=0.0,
         help="Weight of multi-scale gradient matching loss on annotation branch.",
+    )
+    parser.add_argument(
+        "--disable_rgb_reconstruction",
+        action="store_true",
+        help="Train annotation branch only (skip RGB reconstruction half-batch).",
     )
     parser.add_argument(
         "--random_flip",
@@ -860,9 +880,13 @@ def main():
             low_cpu_mem_usage=False,
             device_map=None,
         )
+    if args.enable_object_condition and not args.enable_pre_depth_fusion:
+        raise ValueError("--enable_object_condition requires --enable_pre_depth_fusion")
     if args.enable_pre_depth_fusion:
-        # 4ch RGB latent -> 9ch [RGB latent(4) + pre-depth latent(4) + valid-mask(1)].
-        expand_unet_conv_in(unet, extra_in_channels=5, zero_init=True)
+        # 4ch RGB latent -> 9ch [RGB(4)+pre-depth(4)+valid(1)]
+        # or 13ch when object condition is on [+ class-map latent(4)].
+        extra = 9 if args.enable_object_condition else 5
+        expand_unet_conv_in(unet, extra_in_channels=extra, zero_init=True)
 
     # Freeze vae and text_encoder and set unet to trainable
     vae.requires_grad_(False)
@@ -956,6 +980,7 @@ def main():
             norm_type=args.norm_type,
             truncnorm_min=args.truncnorm_min,
             align_cam_normal=args.align_cam_normal,
+            detection_score_thr=args.detection_score_thr,
         )
         train_dataset_hypersim = train_detail_dataset
         train_dataloader_hypersim = torch.utils.data.DataLoader(
@@ -1070,6 +1095,9 @@ def main():
     logger.info(f"  Using detail train dataset (Approach A): {use_detail_dataset}")
     if use_detail_dataset:
         logger.info(f"  Detail artifact dir: {args.detail_train_data_dir}")
+        logger.info(f"  Detection score thr (train-time filter): {args.detection_score_thr}")
+    logger.info(f"  Disable RGB reconstruction: {args.disable_rgb_reconstruction}")
+    logger.info(f"  Enable object condition (class_map): {args.enable_object_condition}")
     logger.info(f"  Num examples VKITTI = {len(train_dataset_vkitti)}")
     logger.info(f"  Using mix datasets: {args.mix_dataset}")
     logger.info(f"  Dataset alternation probability of Hypersim = {args.prob_hypersim}")
@@ -1159,13 +1187,6 @@ def main():
                 batch = next(iter_hypersim)
 
             with accelerator.accumulate(unet):
-                # Convert images to latent space
-                rgb_latents = vae.encode(
-                    torch.cat((batch["pixel_values"],batch["pixel_values"]), dim=0).to(weight_dtype)
-                    ).latent_dist.sample()
-                rgb_latents = rgb_latents * vae.config.scaling_factor
-
-                # Convert target_annotations to latent space
                 assert len(args.task_name) == 1
                 if args.task_name[0] == "depth":
                     TAR_ANNO = "depth_values"
@@ -1173,14 +1194,26 @@ def main():
                     TAR_ANNO = "normal_values"
                 else:
                     raise ValueError(f"Do not support {args.task_name[0]} yet. ")
-                
-                target_latents = vae.encode(
-                    torch.cat((batch[TAR_ANNO],batch["pixel_values"]), dim=0).to(weight_dtype)
-                    ).latent_dist.sample()
+
+                use_rgb_recon = not args.disable_rgb_reconstruction
+                pixel_values = batch["pixel_values"].to(weight_dtype)
+                anno_values = batch[TAR_ANNO].to(weight_dtype)
+
+                if use_rgb_recon:
+                    rgb_encode_in = torch.cat((pixel_values, pixel_values), dim=0)
+                    target_encode_in = torch.cat((anno_values, pixel_values), dim=0)
+                else:
+                    rgb_encode_in = pixel_values
+                    target_encode_in = anno_values
+
+                # Convert images / targets to latent space
+                rgb_latents = vae.encode(rgb_encode_in).latent_dist.sample()
+                rgb_latents = rgb_latents * vae.config.scaling_factor
+                target_latents = vae.encode(target_encode_in).latent_dist.sample()
                 target_latents = target_latents * vae.config.scaling_factor
-                
+
                 bsz = target_latents.shape[0]
-                bsz_per_task = int(bsz/2)
+                bsz_per_task = bsz // 2 if use_rgb_recon else bsz
 
                 # Get the valid mask for the latent space
                 valid_mask_for_latent = batch.get("valid_mask_values", None)
@@ -1194,8 +1227,9 @@ def main():
                     valid_mask_down_anno = valid_mask_down_anno.repeat((1, 4, 1, 1))
                 else:
                     valid_mask_down_anno = torch.ones_like(target_latents[:bsz_per_task]).to(target_latents.device).bool()
-                
-                valid_mask_down_rgb = torch.ones_like(target_latents[bsz_per_task:]).to(target_latents.device).bool()
+
+                if use_rgb_recon:
+                    valid_mask_down_rgb = torch.ones_like(target_latents[bsz_per_task:]).to(target_latents.device).bool()
 
                 # Set timestep
                 timesteps = torch.tensor([args.timestep], device=target_latents.device).repeat(bsz)
@@ -1204,19 +1238,33 @@ def main():
                 # Get the unet input
                 unet_input = rgb_latents
                 if args.enable_pre_depth_fusion:
+                    class_map_anno = None
                     if batch.get("pre_depth_values") is not None:
-                        pre_depth_anno = batch["pre_depth_values"][:bsz_per_task].to(weight_dtype)
+                        pre_depth_anno = batch["pre_depth_values"].to(weight_dtype)
+                        if use_rgb_recon:
+                            pre_depth_anno = pre_depth_anno[:bsz_per_task]
                         if pre_depth_anno.shape[1] == 1:
                             pre_depth_anno = pre_depth_anno.repeat(1, 3, 1, 1)
-                        pre_valid_anno = batch["pre_depth_valid_mask"][:bsz_per_task].to(weight_dtype)
-                        pre_depth_anno, pre_valid_anno = apply_pre_depth_dropout(
-                            pre_depth_anno, pre_valid_anno, args.pre_depth_dropout_p
-                        )
+                        pre_valid_anno = batch["pre_depth_valid_mask"].to(weight_dtype)
+                        if use_rgb_recon:
+                            pre_valid_anno = pre_valid_anno[:bsz_per_task]
+                        if args.enable_object_condition and batch.get("class_map_values") is not None:
+                            class_map_anno = batch["class_map_values"].to(weight_dtype)
+                            if use_rgb_recon:
+                                class_map_anno = class_map_anno[:bsz_per_task]
+                        if class_map_anno is not None:
+                            pre_depth_anno, pre_valid_anno, class_map_anno = apply_pre_depth_dropout(
+                                pre_depth_anno, pre_valid_anno, args.pre_depth_dropout_p, class_map_anno
+                            )
+                        else:
+                            pre_depth_anno, pre_valid_anno = apply_pre_depth_dropout(
+                                pre_depth_anno, pre_valid_anno, args.pre_depth_dropout_p
+                            )
                     else:
-                        gt_depth_norm = batch[TAR_ANNO][:bsz_per_task].to(weight_dtype)
+                        gt_depth_norm = anno_values
                         valid_mask_for_pre = batch.get("valid_mask_values", None)
                         if valid_mask_for_pre is not None:
-                            valid_mask_for_pre = valid_mask_for_pre[:bsz_per_task].to(weight_dtype)
+                            valid_mask_for_pre = valid_mask_for_pre.to(weight_dtype)
 
                         pre_depth_anno, pre_valid_anno = synthesize_pre_depth(
                             gt_depth_norm,
@@ -1228,12 +1276,23 @@ def main():
                             hole_keep_p=args.pre_depth_hole_keep_p,
                             noise_std=args.pre_depth_noise_std,
                         )
-                    # Reconstruction branch gets zero pre-depth condition by default.
-                    pre_depth_rgb = torch.zeros_like(pre_depth_anno)
-                    pre_valid_rgb = torch.zeros_like(pre_valid_anno)
 
-                    pre_depth_all = torch.cat([pre_depth_anno, pre_depth_rgb], dim=0)
-                    pre_valid_all = torch.cat([pre_valid_anno, pre_valid_rgb], dim=0)
+                    if use_rgb_recon:
+                        # Reconstruction branch gets zero pre-depth condition by default.
+                        pre_depth_rgb = torch.zeros_like(pre_depth_anno)
+                        pre_valid_rgb = torch.zeros_like(pre_valid_anno)
+                        pre_depth_all = torch.cat([pre_depth_anno, pre_depth_rgb], dim=0)
+                        pre_valid_all = torch.cat([pre_valid_anno, pre_valid_rgb], dim=0)
+                        if class_map_anno is not None:
+                            class_map_all = torch.cat(
+                                [class_map_anno, torch.zeros_like(class_map_anno)], dim=0
+                            )
+                        else:
+                            class_map_all = None
+                    else:
+                        pre_depth_all = pre_depth_anno
+                        pre_valid_all = pre_valid_anno
+                        class_map_all = class_map_anno
 
                     pre_depth_latents = encode_pre_depth_latents(
                         vae,
@@ -1244,6 +1303,18 @@ def main():
                         target_hw=pre_depth_latents.shape[-2:],
                     ).to(dtype=pre_depth_latents.dtype)
                     unet_input = torch.cat([rgb_latents, pre_depth_latents, pre_valid_lat], dim=1)
+                    if args.enable_object_condition:
+                        if class_map_all is None:
+                            class_map_all = torch.zeros(
+                                (pre_depth_all.shape[0], 1, pre_depth_all.shape[-2], pre_depth_all.shape[-1]),
+                                device=pre_depth_all.device,
+                                dtype=weight_dtype,
+                            )
+                        class_map_latents = encode_pre_depth_latents(
+                            vae,
+                            class_map_all.to(device=target_latents.device, dtype=weight_dtype),
+                        )
+                        unet_input = torch.cat([unet_input, class_map_latents], dim=1)
 
                 # Get the empty text embedding for conditioning
                 prompt = ""
@@ -1264,26 +1335,34 @@ def main():
                 # Get the task embedding
                 task_emb_anno = torch.tensor([1, 0]).float().unsqueeze(0).to(accelerator.device)
                 task_emb_anno = torch.cat([torch.sin(task_emb_anno), torch.cos(task_emb_anno)], dim=-1).repeat(bsz_per_task, 1)
-                task_emb_rgb = torch.tensor([0, 1]).float().unsqueeze(0).to(accelerator.device)
-                task_emb_rgb = torch.cat([torch.sin(task_emb_rgb), torch.cos(task_emb_rgb)], dim=-1).repeat(bsz_per_task, 1)
-                task_emb = torch.cat((task_emb_anno, task_emb_rgb), dim=0)
+                if use_rgb_recon:
+                    task_emb_rgb = torch.tensor([0, 1]).float().unsqueeze(0).to(accelerator.device)
+                    task_emb_rgb = torch.cat([torch.sin(task_emb_rgb), torch.cos(task_emb_rgb)], dim=-1).repeat(bsz_per_task, 1)
+                    task_emb = torch.cat((task_emb_anno, task_emb_rgb), dim=0)
+                else:
+                    task_emb = task_emb_anno
 
                 # Predict
                 model_pred = unet(unet_input, timesteps, encoder_hidden_states, return_dict=False,
                                   class_labels=task_emb)[0]
 
                 # Compute loss
-                anno_loss = F.mse_loss(model_pred[:bsz_per_task][valid_mask_down_anno].float(), target[:bsz_per_task][valid_mask_down_anno].float(), reduction="mean")
-                rgb_loss = F.mse_loss(model_pred[bsz_per_task:][valid_mask_down_rgb].float(), target[bsz_per_task:][valid_mask_down_rgb].float(), reduction="mean")
+                anno_pred = model_pred[:bsz_per_task] if use_rgb_recon else model_pred
+                anno_tgt = target[:bsz_per_task] if use_rgb_recon else target
+                anno_loss = F.mse_loss(anno_pred[valid_mask_down_anno].float(), anno_tgt[valid_mask_down_anno].float(), reduction="mean")
+                if use_rgb_recon:
+                    rgb_loss = F.mse_loss(model_pred[bsz_per_task:][valid_mask_down_rgb].float(), target[bsz_per_task:][valid_mask_down_rgb].float(), reduction="mean")
+                else:
+                    rgb_loss = model_pred.new_tensor(0.0)
                 grad_loss = model_pred.new_tensor(0.0)
                 if args.grad_loss_weight > 0:
                     grad_loss = multiscale_gradient_loss(
-                        model_pred[:bsz_per_task].float(),
-                        target[:bsz_per_task].float(),
-                        valid_mask_down_anno[:bsz_per_task].float(),
+                        anno_pred.float(),
+                        anno_tgt.float(),
+                        valid_mask_down_anno.float(),
                     )
                 loss = anno_loss + rgb_loss + args.grad_loss_weight * grad_loss
-                
+
                 # Gather loss
                 avg_anno_loss = accelerator.gather(anno_loss.repeat(args.train_batch_size)).mean()
                 log_ann_loss += avg_anno_loss.item() / args.gradient_accumulation_steps
