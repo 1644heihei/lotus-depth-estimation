@@ -54,7 +54,12 @@ from diffusers.utils.torch_utils import is_compiled_module
 from pipeline import LotusDPipeline
 from utils.image_utils import concatenate_images, colorize_depth_map
 from utils.hypersim_dataset import get_hypersim_dataset_depth_normal
-from utils.pre_depth_fusion import downsample_valid_mask, encode_pre_depth_latents, expand_unet_conv_in
+from utils.pre_depth_fusion import (
+    downsample_condition_map,
+    downsample_valid_mask,
+    encode_pre_depth_latents,
+    expand_unet_conv_in,
+)
 from utils.pre_depth_synth import synthesize_pre_depth
 from utils.detail_train_dataset import get_detail_train_dataset
 from utils.vkitti_dataset import VKITTIDataset, VKITTITransform, collate_fn_vkitti
@@ -512,7 +517,19 @@ def parse_args():
     parser.add_argument(
         "--enable_object_condition",
         action="store_true",
-        help="Append class-map latent (4ch) after pre-depth fusion (9ch -> 13ch). Requires --enable_pre_depth_fusion.",
+        help=(
+            "Append object maps after pre-depth fusion. "
+            "Default (without --enable_bbox_size_condition): class_map via VAE (+4ch -> 13ch). "
+            "With --enable_bbox_size_condition: class+size_w+size_h direct (+3ch -> 12ch)."
+        ),
+    )
+    parser.add_argument(
+        "--enable_bbox_size_condition",
+        action="store_true",
+        help=(
+            "Use direct (non-VAE) class_map + size_w + size_h channels (12ch total). "
+            "Requires --enable_object_condition. Class/size are co-rasterized per bbox."
+        ),
     )
     parser.add_argument(
         "--pre_depth_dropout_p",
@@ -882,10 +899,18 @@ def main():
         )
     if args.enable_object_condition and not args.enable_pre_depth_fusion:
         raise ValueError("--enable_object_condition requires --enable_pre_depth_fusion")
+    if args.enable_bbox_size_condition and not args.enable_object_condition:
+        raise ValueError("--enable_bbox_size_condition requires --enable_object_condition")
     if args.enable_pre_depth_fusion:
-        # 4ch RGB latent -> 9ch [RGB(4)+pre-depth(4)+valid(1)]
-        # or 13ch when object condition is on [+ class-map latent(4)].
-        extra = 9 if args.enable_object_condition else 5
+        # 9ch:  RGB(4)+pre(4)+valid(1)                         extra=5
+        # 13ch: + class_map VAE(4)                              extra=9
+        # 12ch: + class(1)+size_w(1)+size_h(1) direct (no VAE)  extra=8
+        if args.enable_bbox_size_condition:
+            extra = 8
+        elif args.enable_object_condition:
+            extra = 9
+        else:
+            extra = 5
         expand_unet_conv_in(unet, extra_in_channels=extra, zero_init=True)
 
     # Freeze vae and text_encoder and set unet to trainable
@@ -1098,6 +1123,7 @@ def main():
         logger.info(f"  Detection score thr (train-time filter): {args.detection_score_thr}")
     logger.info(f"  Disable RGB reconstruction: {args.disable_rgb_reconstruction}")
     logger.info(f"  Enable object condition (class_map): {args.enable_object_condition}")
+    logger.info(f"  Enable bbox size condition (12ch direct): {args.enable_bbox_size_condition}")
     logger.info(f"  Num examples VKITTI = {len(train_dataset_vkitti)}")
     logger.info(f"  Using mix datasets: {args.mix_dataset}")
     logger.info(f"  Dataset alternation probability of Hypersim = {args.prob_hypersim}")
@@ -1239,6 +1265,8 @@ def main():
                 unet_input = rgb_latents
                 if args.enable_pre_depth_fusion:
                     class_map_anno = None
+                    size_w_anno = None
+                    size_h_anno = None
                     if batch.get("pre_depth_values") is not None:
                         pre_depth_anno = batch["pre_depth_values"].to(weight_dtype)
                         if use_rgb_recon:
@@ -1252,10 +1280,36 @@ def main():
                             class_map_anno = batch["class_map_values"].to(weight_dtype)
                             if use_rgb_recon:
                                 class_map_anno = class_map_anno[:bsz_per_task]
+                        if args.enable_bbox_size_condition:
+                            if batch.get("size_w_values") is not None:
+                                size_w_anno = batch["size_w_values"].to(weight_dtype)
+                                if use_rgb_recon:
+                                    size_w_anno = size_w_anno[:bsz_per_task]
+                            if batch.get("size_h_values") is not None:
+                                size_h_anno = batch["size_h_values"].to(weight_dtype)
+                                if use_rgb_recon:
+                                    size_h_anno = size_h_anno[:bsz_per_task]
+                        drop_extras = []
                         if class_map_anno is not None:
-                            pre_depth_anno, pre_valid_anno, class_map_anno = apply_pre_depth_dropout(
-                                pre_depth_anno, pre_valid_anno, args.pre_depth_dropout_p, class_map_anno
+                            drop_extras.append(class_map_anno)
+                        if size_w_anno is not None:
+                            drop_extras.append(size_w_anno)
+                        if size_h_anno is not None:
+                            drop_extras.append(size_h_anno)
+                        if drop_extras:
+                            dropped = apply_pre_depth_dropout(
+                                pre_depth_anno, pre_valid_anno, args.pre_depth_dropout_p, *drop_extras
                             )
+                            pre_depth_anno, pre_valid_anno = dropped[0], dropped[1]
+                            idx = 2
+                            if class_map_anno is not None:
+                                class_map_anno = dropped[idx]
+                                idx += 1
+                            if size_w_anno is not None:
+                                size_w_anno = dropped[idx]
+                                idx += 1
+                            if size_h_anno is not None:
+                                size_h_anno = dropped[idx]
                         else:
                             pre_depth_anno, pre_valid_anno = apply_pre_depth_dropout(
                                 pre_depth_anno, pre_valid_anno, args.pre_depth_dropout_p
@@ -1289,10 +1343,20 @@ def main():
                             )
                         else:
                             class_map_all = None
+                        if size_w_anno is not None:
+                            size_w_all = torch.cat([size_w_anno, torch.zeros_like(size_w_anno)], dim=0)
+                        else:
+                            size_w_all = None
+                        if size_h_anno is not None:
+                            size_h_all = torch.cat([size_h_anno, torch.zeros_like(size_h_anno)], dim=0)
+                        else:
+                            size_h_all = None
                     else:
                         pre_depth_all = pre_depth_anno
                         pre_valid_all = pre_valid_anno
                         class_map_all = class_map_anno
+                        size_w_all = size_w_anno
+                        size_h_all = size_h_anno
 
                     pre_depth_latents = encode_pre_depth_latents(
                         vae,
@@ -1303,7 +1367,34 @@ def main():
                         target_hw=pre_depth_latents.shape[-2:],
                     ).to(dtype=pre_depth_latents.dtype)
                     unet_input = torch.cat([rgb_latents, pre_depth_latents, pre_valid_lat], dim=1)
-                    if args.enable_object_condition:
+                    if args.enable_bbox_size_condition:
+                        # 12ch path: class / size_w / size_h as direct latent channels.
+                        zeros_1 = torch.zeros(
+                            (pre_depth_all.shape[0], 1, pre_depth_all.shape[-2], pre_depth_all.shape[-1]),
+                            device=pre_depth_all.device,
+                            dtype=weight_dtype,
+                        )
+                        if class_map_all is None:
+                            class_map_all = zeros_1
+                        if size_w_all is None:
+                            size_w_all = zeros_1
+                        if size_h_all is None:
+                            size_h_all = zeros_1
+                        target_hw = pre_depth_latents.shape[-2:]
+                        class_lat = downsample_condition_map(
+                            class_map_all.to(device=target_latents.device, dtype=weight_dtype),
+                            target_hw=target_hw,
+                        ).to(dtype=pre_depth_latents.dtype)
+                        size_w_lat = downsample_condition_map(
+                            size_w_all.to(device=target_latents.device, dtype=weight_dtype),
+                            target_hw=target_hw,
+                        ).to(dtype=pre_depth_latents.dtype)
+                        size_h_lat = downsample_condition_map(
+                            size_h_all.to(device=target_latents.device, dtype=weight_dtype),
+                            target_hw=target_hw,
+                        ).to(dtype=pre_depth_latents.dtype)
+                        unet_input = torch.cat([unet_input, class_lat, size_w_lat, size_h_lat], dim=1)
+                    elif args.enable_object_condition:
                         if class_map_all is None:
                             class_map_all = torch.zeros(
                                 (pre_depth_all.shape[0], 1, pre_depth_all.shape[-2], pre_depth_all.shape[-1]),

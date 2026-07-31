@@ -2,8 +2,8 @@
 
 更新日: 2026-07-24
 
-**重みパスと学習方法の一覧（見返し用）:** [`detail_training_runs.md`](detail_training_runs.md)  
-**bbox サイズ条件の実装計画:** [`bbox_size_condition_plan.md`](bbox_size_condition_plan.md)
+**重みパスと学習方法の一覧（見返し用）:** [`../detail_training_runs.md`](../detail_training_runs.md)  
+**bbox サイズ条件（12ch direct・実装済み）:** [`bbox_size_condition_plan.md`](bbox_size_condition_plan.md)
 
 ## 1. 目的
 

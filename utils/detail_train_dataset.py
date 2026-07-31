@@ -11,9 +11,10 @@ import torch.nn.functional as F
 from PIL import Image
 
 from utils.hypersim_dataset import HypersimImageDepthNormalTransform, get_hypersim_dataset_depth_normal
-from utils.object_condition import class_map_path, class_map_to_tensor, rasterize_class_map
+from utils.object_condition import class_map_path, class_map_to_tensor
 from utils.object_detection_cache import detections_to_mask, load_detections
 from utils.object_pre_depth import load_pre_depth_artifacts, pre_depth_path, valid_mask_path
+from utils.object_size_condition import rasterize_class_and_size_maps, size_map_to_tensor
 
 
 def parse_hf_uri(uri: str) -> Tuple[str, str]:
@@ -130,8 +131,8 @@ class DetailTrainDataset(torch.utils.data.Dataset):
             raise FileNotFoundError(f"Missing pre-depth artifacts for {rgb_path}")
 
         # Training-time score filter: keep only high-confidence detections for
-        # valid_mask / class_map. Offline pre_depth.npy stays as-is; regions that
-        # fail the threshold are marked invalid so they are not used as condition.
+        # valid_mask / class_map / size maps. Offline pre_depth.npy stays as-is;
+        # regions that fail the threshold are marked invalid.
         if self.detection_score_thr > 0:
             detections = [
                 d
@@ -141,14 +142,22 @@ class DetailTrainDataset(torch.utils.data.Dataset):
             h0, w0 = valid_mask.shape[:2]
             keep = detections_to_mask(detections, h0, w0)
             valid_mask = (valid_mask.astype(np.float32) * keep).astype(np.float32)
-            class_map = rasterize_class_map(detections, h0, w0)
+            class_map, size_w, size_h = rasterize_class_and_size_maps(detections, h0, w0)
         else:
-            class_map = np.load(class_map_path(rgb_path, self.detail_root))
+            detections = load_detections(rgb_path, self.detail_root)
+            h0, w0 = valid_mask.shape[:2]
+            class_map, size_w, size_h = rasterize_class_and_size_maps(detections, h0, w0)
+            if not detections and class_map_path(rgb_path, self.detail_root).is_file():
+                class_map = np.load(class_map_path(rgb_path, self.detail_root))
 
         pre_depth_t = self._resize_map(pre_depth, pixel_values.shape[-2:])
         valid_mask_t = self._resize_map(valid_mask, pixel_values.shape[-2:])
         class_map_t = self._resize_map(class_map.astype(np.float32), pixel_values.shape[-2:], nearest=True)
+        size_w_t = self._resize_map(size_w, pixel_values.shape[-2:], nearest=True)
+        size_h_t = self._resize_map(size_h, pixel_values.shape[-2:], nearest=True)
         class_map_norm = torch.from_numpy(class_map_to_tensor(class_map_t.numpy())).unsqueeze(0)
+        size_w_norm = torch.from_numpy(size_map_to_tensor(size_w_t.numpy())).unsqueeze(0)
+        size_h_norm = torch.from_numpy(size_map_to_tensor(size_h_t.numpy())).unsqueeze(0)
 
         return {
             "pixel_values": pixel_values,
@@ -157,6 +166,8 @@ class DetailTrainDataset(torch.utils.data.Dataset):
             "pre_depth_values": pre_depth_t.unsqueeze(0).repeat(3, 1, 1),
             "pre_depth_valid_mask": valid_mask_t.unsqueeze(0),
             "class_map_values": class_map_norm,
+            "size_w_values": size_w_norm,
+            "size_h_values": size_h_norm,
             "image_path": rgb_path,
             "depth_path": depth_path,
         }
@@ -250,6 +261,8 @@ def get_detail_train_dataset(
         pre_depth_values = torch.stack([e["pre_depth_values"] for e in examples])
         pre_depth_valid_mask = torch.stack([e["pre_depth_valid_mask"] for e in examples])
         class_map_values = torch.stack([e["class_map_values"] for e in examples])
+        size_w_values = torch.stack([e["size_w_values"] for e in examples])
+        size_h_values = torch.stack([e["size_h_values"] for e in examples])
         return {
             "pixel_values": pixel_values.float(),
             "depth_values": depth_values.float(),
@@ -257,6 +270,8 @@ def get_detail_train_dataset(
             "pre_depth_values": pre_depth_values.float(),
             "pre_depth_valid_mask": pre_depth_valid_mask.float(),
             "class_map_values": class_map_values.float(),
+            "size_w_values": size_w_values.float(),
+            "size_h_values": size_h_values.float(),
             "image_pathes": [e["image_path"] for e in examples],
             "depth_paths": [e["depth_path"] for e in examples],
         }

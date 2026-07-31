@@ -8,7 +8,7 @@ from packaging import version
 from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection
 import tensorboard
 from utils.image_utils import resize_max_res, get_tv_resample_method, resize_back, get_pil_resample_method
-from utils.pre_depth_fusion import downsample_valid_mask, encode_pre_depth_latents
+from utils.pre_depth_fusion import downsample_condition_map, downsample_valid_mask, encode_pre_depth_latents
 from torchvision.transforms.functional import resize
 from torchvision.transforms import InterpolationMode
 
@@ -1024,6 +1024,8 @@ class LotusDPipeline(DirectDiffusionPipeline):
         pre_depth: Optional[torch.FloatTensor] = None,
         pre_depth_valid_mask: Optional[torch.FloatTensor] = None,
         class_map: Optional[torch.FloatTensor] = None,
+        size_w: Optional[torch.FloatTensor] = None,
+        size_h: Optional[torch.FloatTensor] = None,
         prompt: Union[str, List[str]] = None,
         timesteps: List[int] = None,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
@@ -1051,7 +1053,12 @@ class LotusDPipeline(DirectDiffusionPipeline):
                 Optional valid mask for pre-depth, shape [B, 1, H, W]. Values > 0.5 are treated as valid.
             class_map (`torch.FloatTensor`, *optional*):
                 Optional class-map condition in normalized range (typically [-1, 1]),
-                shape [B, 1, H, W] or [B, 3, H, W]. Used when UNet expects 13 input channels.
+                shape [B, 1, H, W] or [B, 3, H, W].
+                - 13ch models: VAE-encoded (+4)
+                - 12ch models: downsampled directly (+1) with size_w/size_h
+            size_w / size_h (`torch.FloatTensor`, *optional*):
+                Optional normalized bbox size maps in [-1, 1], shape [B, 1, H, W].
+                Used with 12ch direct object conditioning.
             prompt (`str` or `List[str]`, *optional*):
                 The prompt or prompts to guide image generation. If not defined, you need to pass `prompt_embeds`.
             timesteps (`List[int]`, *optional*):
@@ -1139,7 +1146,7 @@ class LotusDPipeline(DirectDiffusionPipeline):
         expected_in_channels = self.unet.config.in_channels
         if expected_in_channels > rgb_latents.shape[1]:
             extra_channels = expected_in_channels - rgb_latents.shape[1]
-            if extra_channels in (5, 9):
+            if extra_channels in (5, 8, 9):
                 if pre_depth is None:
                     pre_depth = torch.zeros(
                         (rgb_in.shape[0], 1, rgb_in.shape[-2], rgb_in.shape[-1]),
@@ -1183,6 +1190,45 @@ class LotusDPipeline(DirectDiffusionPipeline):
                             )
                     class_map_latents = encode_pre_depth_latents(self.vae, class_map)
                     latent_model_input = torch.cat([latent_model_input, class_map_latents], dim=1)
+                elif extra_channels == 8:
+                    zeros_1 = torch.zeros(
+                        (rgb_in.shape[0], 1, rgb_in.shape[-2], rgb_in.shape[-1]),
+                        device=device,
+                        dtype=rgb_in.dtype,
+                    )
+                    if class_map is None:
+                        class_map = zeros_1
+                    else:
+                        class_map = class_map.to(device=device, dtype=rgb_in.dtype)
+                        if class_map.shape[-2:] != rgb_in.shape[-2:]:
+                            class_map = F.interpolate(
+                                class_map, size=rgb_in.shape[-2:], mode="nearest"
+                            )
+                    if size_w is None:
+                        size_w = zeros_1
+                    else:
+                        size_w = size_w.to(device=device, dtype=rgb_in.dtype)
+                        if size_w.shape[-2:] != rgb_in.shape[-2:]:
+                            size_w = F.interpolate(size_w, size=rgb_in.shape[-2:], mode="nearest")
+                    if size_h is None:
+                        size_h = zeros_1
+                    else:
+                        size_h = size_h.to(device=device, dtype=rgb_in.dtype)
+                        if size_h.shape[-2:] != rgb_in.shape[-2:]:
+                            size_h = F.interpolate(size_h, size=rgb_in.shape[-2:], mode="nearest")
+                    target_hw = pre_depth_latents.shape[-2:]
+                    class_lat = downsample_condition_map(class_map, target_hw=target_hw).to(
+                        dtype=pre_depth_latents.dtype
+                    )
+                    size_w_lat = downsample_condition_map(size_w, target_hw=target_hw).to(
+                        dtype=pre_depth_latents.dtype
+                    )
+                    size_h_lat = downsample_condition_map(size_h, target_hw=target_hw).to(
+                        dtype=pre_depth_latents.dtype
+                    )
+                    latent_model_input = torch.cat(
+                        [latent_model_input, class_lat, size_w_lat, size_h_lat], dim=1
+                    )
             else:
                 # Fallback for unexpected channel counts: append zeros.
                 zeros = torch.zeros(

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -16,9 +15,10 @@ from tqdm.auto import tqdm
 
 from pipeline import LotusDPipeline
 from utils.image_utils import colorize_depth_map
-from utils.object_condition import class_map_to_tensor, rasterize_class_map
+from utils.object_condition import class_map_to_tensor
 from utils.object_detection_cache import load_yolo_model, run_yolo_detections
-from utils.object_pre_depth import CoreDepthPredictor, disparity_pred_to_norm
+from utils.object_pre_depth import CoreDepthPredictor
+from utils.object_size_condition import rasterize_class_and_size_maps, size_map_to_tensor
 from utils.seed_all import seed_all
 
 
@@ -41,7 +41,17 @@ def parse_args():
     return p.parse_args()
 
 
-def predict_with_pre_depth(pipe, rgb_np, pre_depth_norm, valid_mask, class_map, args, generator):
+def predict_with_pre_depth(
+    pipe,
+    rgb_np,
+    pre_depth_norm,
+    valid_mask,
+    class_map,
+    size_w,
+    size_h,
+    args,
+    generator,
+):
     device = pipe.device
     image = torch.from_numpy(rgb_np.astype(np.float32)).permute(2, 0, 1).unsqueeze(0)
     image = image / 127.5 - 1.0
@@ -49,22 +59,11 @@ def predict_with_pre_depth(pipe, rgb_np, pre_depth_norm, valid_mask, class_map, 
 
     pre_t = torch.from_numpy(pre_depth_norm.astype(np.float32)).unsqueeze(0).unsqueeze(0)
     pre_t = pre_t.repeat(1, 3, 1, 1).to(device=device, dtype=image.dtype)
-    valid_t = torch.from_numpy(valid_mask.astype(np.float32)).unsqueeze(0).unsqueeze(0).to(device=device, dtype=image.dtype)
+    valid_t = torch.from_numpy(valid_mask.astype(np.float32)).unsqueeze(0).unsqueeze(0).to(
+        device=device, dtype=image.dtype
+    )
 
     extra_channels = pipe.unet.config.in_channels - 4
-    class_t = None
-    if extra_channels == 9 and class_map is not None:
-        class_norm = class_map_to_tensor(class_map)
-        class_t = torch.from_numpy(class_norm).unsqueeze(0).unsqueeze(0).to(device=device, dtype=image.dtype)
-
-    task_emb = torch.tensor([1, 0], device=device).float().unsqueeze(0)
-    task_emb = torch.cat([torch.sin(task_emb), torch.cos(task_emb)], dim=-1)
-
-    if torch.backends.mps.is_available():
-        autocast_ctx = nullcontext()
-    else:
-        autocast_ctx = torch.autocast(device_type=device.type)
-
     pipe_kwargs = dict(
         rgb_in=image,
         pre_depth=pre_t,
@@ -74,12 +73,35 @@ def predict_with_pre_depth(pipe, rgb_np, pre_depth_norm, valid_mask, class_map, 
         generator=generator,
         output_type="np",
         timesteps=[args.timestep],
-        task_emb=task_emb,
+        task_emb=None,
         processing_res=args.processing_res,
         match_input_res=True,
     )
-    if class_t is not None:
+
+    task_emb = torch.tensor([1, 0], device=device).float().unsqueeze(0)
+    task_emb = torch.cat([torch.sin(task_emb), torch.cos(task_emb)], dim=-1)
+    pipe_kwargs["task_emb"] = task_emb
+
+    if extra_channels in (8, 9) and class_map is not None:
+        class_norm = class_map_to_tensor(class_map)
+        class_t = torch.from_numpy(class_norm).unsqueeze(0).unsqueeze(0).to(
+            device=device, dtype=image.dtype
+        )
         pipe_kwargs["class_map"] = class_t
+    if extra_channels == 8 and size_w is not None and size_h is not None:
+        sw = torch.from_numpy(size_map_to_tensor(size_w)).unsqueeze(0).unsqueeze(0).to(
+            device=device, dtype=image.dtype
+        )
+        sh = torch.from_numpy(size_map_to_tensor(size_h)).unsqueeze(0).unsqueeze(0).to(
+            device=device, dtype=image.dtype
+        )
+        pipe_kwargs["size_w"] = sw
+        pipe_kwargs["size_h"] = sh
+
+    if torch.backends.mps.is_available():
+        autocast_ctx = nullcontext()
+    else:
+        autocast_ctx = torch.autocast(device_type=device.type)
 
     with autocast_ctx:
         pred = pipe(**pipe_kwargs).images[0]
@@ -101,7 +123,9 @@ def main():
     detail_pipe.set_progress_bar_config(disable=True)
 
     yolo = load_yolo_model(args.yolo_model)
-    core_predictor = CoreDepthPredictor(core_pipe, timestep=args.timestep, processing_res=args.processing_res, generator=generator)
+    core_predictor = CoreDepthPredictor(
+        core_pipe, timestep=args.timestep, processing_res=args.processing_res, generator=generator
+    )
 
     images = sorted(list(Path(args.input_dir).rglob("*.png")) + list(Path(args.input_dir).rglob("*.jpg")))
     if args.max_images and args.max_images > 0:
@@ -122,9 +146,17 @@ def main():
             align_mode=args.align_mode,
         )
         h, w = rgb_np.shape[:2]
-        class_map = rasterize_class_map(detections, h, w)
+        class_map, size_w, size_h = rasterize_class_and_size_maps(detections, h, w)
         refined = predict_with_pre_depth(
-            detail_pipe, rgb_np, pre_depth_norm, valid_mask, class_map, args, generator
+            detail_pipe,
+            rgb_np,
+            pre_depth_norm,
+            valid_mask,
+            class_map,
+            size_w,
+            size_h,
+            args,
+            generator,
         )
 
         stem = image_path.stem

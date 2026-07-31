@@ -134,8 +134,48 @@ python infer_object_refined_depth.py
 
 ---
 
+## Run C — 12ch（class + size_w/h、物体マップは VAE なし）
+
+実装日: 2026-07-24（学習は別途）
+
+### 入力チャンネル
+
+```text
+RGB(4) + pre-depth VAE(4) + valid(1) + class(1) + size_w(1) + size_h(1) = 12ch
+```
+
+- class / size は **同一 score 優先で共塗り**（`rasterize_class_and_size_maps`）
+- VAE は通さず latent へ nearest downsample（valid と同型）
+- 既存 13ch とは非互換（別 `output_dir`）
+
+### 主な設定
+
+13ch とほぼ同じ（12k / bsz8 / dropout 0.3 / score 0.5 / RGB recon OFF）。追加フラグ:
+
+```text
+--enable_object_condition
+--enable_bbox_size_condition
+```
+
+### パス・スクリプト
+
+| 用途 | パス |
+|--|--|
+| 学習スクリプト | `train_scripts/train_lotus_d_detail_12ch.ps1` |
+| 出力（予定） | `output/train-lotus-d-detail-12ch-bsz8/` |
+| サイズ実装 | `utils/object_size_condition.py` |
+| 計画 | `docs/sandbox/bbox_size_condition_plan.md` |
+
+### 起動
+
+```powershell
+powershell -File train_scripts/train_lotus_d_detail_12ch.ps1
+```
+
+---
+
 ## 次の実験を足すとき
 
-1. 新しい `output/train-lotus-d-detail-.../` を切る（既存 Run A/B は触らない）
-2. このファイルに Run C としてパス・設定・日付を追記する
-3. bbox サイズ等をチャンネル追加する場合は **in_channels が変わるため、既存 13ch のまま resume 不可**（新規 run）
+1. 新しい `output/train-lotus-d-detail-.../` を切る（既存 Run A/B/C は触らない）
+2. このファイルに Run D としてパス・設定・日付を追記する
+3. in_channels が変わる変更は **既存 ckpt のまま resume 不可**（新規 run）

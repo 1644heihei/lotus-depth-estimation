@@ -119,3 +119,20 @@ def downsample_valid_mask(
     vm = F.interpolate(vm, size=target_hw, mode="nearest")
     return (vm >= threshold).float()
 
+
+def downsample_condition_map(
+    cond: torch.Tensor,
+    target_hw: Tuple[int, int],
+    *,
+    mode: str = "nearest",
+) -> torch.Tensor:
+    """Downsample continuous condition maps to latent resolution (no binarize).
+
+    Used for direct (non-VAE) class_map / size_w / size_h channels.
+    """
+    if cond.dim() != 4:
+        raise ValueError(f"Expected 4D tensor, got {tuple(cond.shape)}")
+    if mode == "bilinear":
+        return F.interpolate(cond.float(), size=target_hw, mode=mode, align_corners=False)
+    return F.interpolate(cond.float(), size=target_hw, mode=mode)
+
