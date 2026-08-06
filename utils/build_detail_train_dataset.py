@@ -35,11 +35,18 @@ def parse_args():
     p = argparse.ArgumentParser(description="Build offline detail training dataset (Approach A).")
     p.add_argument("--rgb_dir", type=str, required=True, help="Root directory of RGB training images")
     p.add_argument("--output_dir", type=str, required=True, help="Where to write detections/pre-depth/class maps")
+    p.add_argument(
+        "--detections_root",
+        type=str,
+        default=None,
+        help="Optional separate root used to read cached detections.",
+    )
     p.add_argument("--core_model", type=str, required=True, help="Core Lotus-D checkpoint or HF repo id")
     p.add_argument("--steps", type=str, default="all", help="Comma-separated: yolo,predepth,classmap,all")
     p.add_argument("--pattern", type=str, default="rgb_cam_*.png")
     p.add_argument("--max_images", type=int, default=0)
     p.add_argument("--skip_existing", action="store_true", default=True)
+    p.add_argument("--overwrite", action="store_true")
     p.add_argument("--yolo_model", type=str, default="yolov8n-seg.pt")
     p.add_argument("--yolo_score_thr", type=float, default=0.25)
     p.add_argument("--yolo_device", type=str, default="0")
@@ -83,6 +90,9 @@ def main():
 
     rgb_dir = Path(args.rgb_dir)
     output_dir = Path(args.output_dir)
+    detections_root = (
+        Path(args.detections_root) if args.detections_root else output_dir
+    )
     rgb_paths = iter_rgb_paths(rgb_dir, args.pattern, args.max_images)
     if not rgb_paths:
         raise FileNotFoundError(f"No images matching {args.pattern} under {rgb_dir}")
@@ -108,7 +118,7 @@ def main():
         )
 
     stats = {"yolo": 0, "predepth": 0, "classmap": 0, "skipped": 0}
-    for rgb_path in tqdm(rgb_paths, desc="build_detail_train_dataset"):
+    for rgb_path in tqdm(rgb_paths, desc="build_detail_train_dataset", mininterval=30.0):
         rgb_np = np.array(Image.open(rgb_path).convert("RGB"))
         h, w = rgb_np.shape[:2]
 
@@ -116,7 +126,7 @@ def main():
             from utils.object_detection_cache import detections_json_path
 
             det_path = detections_json_path(rgb_path, output_dir)
-            if not (args.skip_existing and det_path.is_file()):
+            if not (args.skip_existing and not args.overwrite and det_path.is_file()):
                 detections = run_yolo_detections(
                     rgb_np,
                     model=yolo_model,
@@ -134,7 +144,7 @@ def main():
             if args.skip_existing and pre_depth_path(rgb_path, output_dir).is_file():
                 stats["skipped"] += 1
             else:
-                detections = load_detections(rgb_path, output_dir)
+                detections = load_detections(rgb_path, detections_root)
                 pre_depth_norm, valid_mask, _ = predictor.build_pre_depth(
                     rgb_np,
                     detections,
@@ -151,7 +161,7 @@ def main():
 
             if args.skip_existing and class_map_path(rgb_path, output_dir).is_file():
                 continue
-            detections = load_detections(rgb_path, output_dir)
+            detections = load_detections(rgb_path, detections_root)
             class_map = rasterize_class_map(detections, h, w)
             save_class_map(class_map, rgb_path, output_dir)
             stats["classmap"] += 1

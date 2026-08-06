@@ -504,10 +504,30 @@ def parse_args():
         help="Approach-A offline detail dataset root (pre-depth / valid_mask / class_map).",
     )
     parser.add_argument(
+        "--pre_depth_artifacts_dir",
+        type=str,
+        default=None,
+        help=(
+            "Optional separate root for pre_depth/valid_mask artifacts. "
+            "Detections/class_map remain under --detail_train_data_dir."
+        ),
+    )
+    parser.add_argument(
         "--detection_score_thr",
         type=float,
         default=0.5,
         help="At train time, keep only YOLO detections with score >= this for valid_mask/class_map.",
+    )
+    parser.add_argument(
+        "--detail_train_manifest",
+        type=str,
+        default=None,
+        help="Optional JSON manifest of rgb/depth paths (e.g. from filter_detail_train_manifest.py).",
+    )
+    parser.add_argument(
+        "--require_detections",
+        action="store_true",
+        help="Train only on images with at least one detection at --detection_score_thr.",
     )
     parser.add_argument(
         "--enable_pre_depth_fusion",
@@ -1006,6 +1026,9 @@ def main():
             truncnorm_min=args.truncnorm_min,
             align_cam_normal=args.align_cam_normal,
             detection_score_thr=args.detection_score_thr,
+            require_detections=args.require_detections,
+            manifest_path=args.detail_train_manifest,
+            pre_depth_root=args.pre_depth_artifacts_dir,
         )
         train_dataset_hypersim = train_detail_dataset
         train_dataloader_hypersim = torch.utils.data.DataLoader(
@@ -1120,7 +1143,10 @@ def main():
     logger.info(f"  Using detail train dataset (Approach A): {use_detail_dataset}")
     if use_detail_dataset:
         logger.info(f"  Detail artifact dir: {args.detail_train_data_dir}")
+        logger.info(f"  Pre-depth artifact dir: {args.pre_depth_artifacts_dir or args.detail_train_data_dir}")
         logger.info(f"  Detection score thr (train-time filter): {args.detection_score_thr}")
+        logger.info(f"  Detail train manifest: {args.detail_train_manifest}")
+        logger.info(f"  Require detections only: {args.require_detections}")
     logger.info(f"  Disable RGB reconstruction: {args.disable_rgb_reconstruction}")
     logger.info(f"  Enable object condition (class_map): {args.enable_object_condition}")
     logger.info(f"  Enable bbox size condition (12ch direct): {args.enable_bbox_size_condition}")
@@ -1172,6 +1198,7 @@ def main():
         range(0, args.max_train_steps),
         initial=initial_global_step,
         desc="Steps",
+        mininterval=30.0,
         # Only show the progress bar once on each machine.
         disable=not accelerator.is_local_main_process,
     )

@@ -8,6 +8,7 @@ from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 
 from utils.object_detection_cache import ObjectDetection, detections_to_mask
@@ -56,11 +57,25 @@ class CoreDepthPredictor:
 
     @torch.no_grad()
     def predict_rgb(self, rgb_np: np.ndarray) -> np.ndarray:
+        return self.predict_rgb_batch([rgb_np])[0]
+
+    @torch.no_grad()
+    def predict_rgb_batch(self, rgb_images: Sequence[np.ndarray]) -> np.ndarray:
+        if not rgb_images:
+            return np.empty((0,), dtype=np.float32)
+        shapes = {image.shape for image in rgb_images}
+        if len(shapes) != 1:
+            raise ValueError("All RGB images in a prediction batch must share one shape.")
         device = self.pipe.device
-        image = torch.from_numpy(rgb_np.astype(np.float32)).permute(2, 0, 1).unsqueeze(0)
+        image = torch.from_numpy(np.stack(rgb_images).astype(np.float32)).permute(0, 3, 1, 2)
         image = image / 127.5 - 1.0
         image = image.to(device)
-        task_emb = torch.tensor([1, 0], device=device).float().unsqueeze(0)
+        task_emb = (
+            torch.tensor([1, 0], device=device)
+            .float()
+            .unsqueeze(0)
+            .repeat(len(rgb_images), 1)
+        )
         task_emb = torch.cat([torch.sin(task_emb), torch.cos(task_emb)], dim=-1)
         if torch.backends.mps.is_available():
             autocast_ctx = nullcontext()
@@ -69,7 +84,7 @@ class CoreDepthPredictor:
         with autocast_ctx:
             pred = self.pipe(
                 rgb_in=image,
-                prompt="",
+                prompt=[""] * len(rgb_images),
                 num_inference_steps=1,
                 generator=self.generator,
                 output_type="np",
@@ -78,8 +93,8 @@ class CoreDepthPredictor:
                 processing_res=self.processing_res,
                 match_input_res=True,
                 resample_method=self.resample_method,
-            ).images[0]
-        return pred.mean(axis=-1).astype(np.float32)
+            ).images
+        return np.asarray(pred).mean(axis=-1).astype(np.float32)
 
     def build_pre_depth(
         self,
@@ -127,12 +142,36 @@ def save_pre_depth_artifacts(
     valid_mask: np.ndarray,
     rgb_path: str | Path,
     detail_root: str | Path,
+    *,
+    storage_size: Optional[Tuple[int, int]] = None,
+    compact: bool = False,
 ) -> Tuple[Path, Path]:
     pre_path = pre_depth_path(rgb_path, detail_root)
     valid_path = valid_mask_path(rgb_path, detail_root)
     pre_path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(pre_path, pre_depth_norm.astype(np.float32))
-    np.save(valid_path, valid_mask.astype(np.float32))
+    if storage_size is not None:
+        pre_tensor = torch.from_numpy(pre_depth_norm.astype(np.float32))[None, None]
+        valid_tensor = torch.from_numpy(valid_mask.astype(np.float32))[None, None]
+        pre_depth_norm = (
+            F.interpolate(
+                pre_tensor, size=storage_size, mode="bilinear", align_corners=False
+            )[0, 0]
+            .cpu()
+            .numpy()
+        )
+        valid_mask = (
+            F.interpolate(valid_tensor, size=storage_size, mode="nearest")[0, 0]
+            .cpu()
+            .numpy()
+        )
+    pre_dtype = np.float16 if compact else np.float32
+    valid_array = (
+        (valid_mask > 0.5).astype(np.uint8)
+        if compact
+        else valid_mask.astype(np.float32)
+    )
+    np.save(pre_path, pre_depth_norm.astype(pre_dtype))
+    np.save(valid_path, valid_array)
     return pre_path, valid_path
 
 

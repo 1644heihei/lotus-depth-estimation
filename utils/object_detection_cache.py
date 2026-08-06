@@ -19,6 +19,45 @@ class ObjectDetection:
     class_name: str
     score: float
     mask_area: float = 0.0
+    mask_fill_ratio: float = 1.0
+    mask_axis_ratio: float = 1.0
+    mask_angle_sin2: float = 0.0
+    mask_angle_cos2: float = 1.0
+    mask_orientation_confidence: float = 0.0
+    mask_valid: float = 0.0
+
+
+def mask_shape_features(binary_mask: np.ndarray, bbox_area: float) -> Dict[str, float]:
+    """Return rotation-invariant and 180-degree-periodic 2D mask descriptors."""
+    ys, xs = np.nonzero(binary_mask)
+    fill_ratio = float(len(xs) / max(bbox_area, 1.0))
+    if len(xs) < 4:
+        return {
+            "mask_fill_ratio": fill_ratio,
+            "mask_axis_ratio": 1.0,
+            "mask_angle_sin2": 0.0,
+            "mask_angle_cos2": 1.0,
+            "mask_orientation_confidence": 0.0,
+            "mask_valid": 0.0,
+        }
+    points = np.stack([xs, ys], axis=1).astype(np.float64)
+    covariance = np.cov(points, rowvar=False)
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    order = np.argsort(eigenvalues)[::-1]
+    major = max(float(eigenvalues[order[0]]), 1e-8)
+    minor = max(float(eigenvalues[order[1]]), 1e-8)
+    direction = eigenvectors[:, order[0]]
+    theta = float(np.arctan2(direction[1], direction[0]))
+    axis_ratio = float(np.sqrt(major / minor))
+    confidence = float(np.clip((major - minor) / (major + minor), 0.0, 1.0))
+    return {
+        "mask_fill_ratio": float(np.clip(fill_ratio, 0.0, 1.0)),
+        "mask_axis_ratio": float(np.clip(axis_ratio, 1.0, 20.0)),
+        "mask_angle_sin2": float(np.sin(2.0 * theta)),
+        "mask_angle_cos2": float(np.cos(2.0 * theta)),
+        "mask_orientation_confidence": confidence,
+        "mask_valid": 1.0,
+    }
 
 
 def _stem_and_parent(rgb_path: str | Path) -> tuple[Path, str]:
@@ -48,6 +87,9 @@ def _relative_under_split(rgb_path: Path | str) -> Path:
             return Path(*parts[2:])
         return Path(without)
     parts = Path(s).parts
+    for idx, part in enumerate(parts):
+        if part.lower().startswith("scene") and idx + 1 < len(parts):
+            return Path(*parts[idx:])
     for split in ("train", "val", "test"):
         if split in parts:
             idx = parts.index(split)
@@ -104,12 +146,21 @@ def run_yolo_detections(
         if x2 <= x1 or y2 <= y1:
             continue
         mask_area = float((x2 - x1) * (y2 - y1))
+        shape_features = mask_shape_features(
+            np.ones((y2 - y1, x2 - x1), dtype=bool), mask_area
+        )
+        shape_features["mask_valid"] = 0.0
         if masks is not None and i < len(masks):
             seg = masks[i].detach().cpu().numpy()
             if seg.ndim == 3:
                 seg = seg[0]
             seg_resized = cv2.resize(seg.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
-            mask_area = float((seg_resized > 0.5).sum())
+            binary_mask = seg_resized > 0.5
+            mask_area = float(binary_mask.sum())
+            shape_features = mask_shape_features(
+                binary_mask[y1:y2, x1:x2],
+                float((x2 - x1) * (y2 - y1)),
+            )
         detections.append(
             ObjectDetection(
                 bbox=[x1, y1, x2, y2],
@@ -117,6 +168,7 @@ def run_yolo_detections(
                 class_name=label,
                 score=score,
                 mask_area=mask_area,
+                **shape_features,
             )
         )
     detections.sort(key=lambda d: d.score, reverse=True)

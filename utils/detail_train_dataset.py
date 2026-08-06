@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -13,8 +15,51 @@ from PIL import Image
 from utils.hypersim_dataset import HypersimImageDepthNormalTransform, get_hypersim_dataset_depth_normal
 from utils.object_condition import class_map_path, class_map_to_tensor
 from utils.object_detection_cache import detections_to_mask, load_detections
+
+
+def count_detections_at_thr(rgb_path: str | Path, detail_root: str | Path, score_thr: float) -> int:
+    detections = load_detections(rgb_path, detail_root)
+    return sum(1 for d in detections if d.score >= score_thr)
+
+
+def load_detail_train_manifest(manifest_path: str | Path) -> Tuple[List[str], List[str], dict]:
+    payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    entries = payload.get("entries", [])
+    if not entries:
+        raise ValueError(f"Manifest has no entries: {manifest_path}")
+    rgb_paths = [e["rgb_path"] for e in entries]
+    depth_paths = [e.get("depth_path") or _guess_depth_path_from_rgb(e["rgb_path"]) for e in entries]
+    return rgb_paths, depth_paths, payload
+
+
+def _guess_depth_path_from_rgb(rgb_path: str) -> str:
+    p = Path(rgb_path)
+    if p.name.startswith("rgb_cam_"):
+        depth_name = p.name.replace("rgb_cam_", "depth_plane_cam_")
+        candidate = p.parent / depth_name
+        if candidate.is_file():
+            return str(candidate)
+    raise FileNotFoundError(f"Could not infer depth path for {rgb_path}")
+
+
+def filter_paths_with_detections(
+    rgb_paths: List[str],
+    depth_paths: List[str],
+    detail_root: str | Path,
+    *,
+    detection_score_thr: float,
+) -> Tuple[List[str], List[str]]:
+    kept_rgb: List[str] = []
+    kept_depth: List[str] = []
+    for rgb, depth in zip(rgb_paths, depth_paths):
+        if count_detections_at_thr(rgb, detail_root, detection_score_thr) > 0:
+            kept_rgb.append(rgb)
+            kept_depth.append(depth)
+    return kept_rgb, kept_depth
 from utils.object_pre_depth import load_pre_depth_artifacts, pre_depth_path, valid_mask_path
 from utils.object_size_condition import rasterize_class_and_size_maps, size_map_to_tensor
+
+logger = logging.getLogger(__name__)
 
 
 def parse_hf_uri(uri: str) -> Tuple[str, str]:
@@ -53,12 +98,17 @@ def list_rgb_images(rgb_root: str | Path, pattern: str = "rgb_cam_*.png") -> Lis
     return sorted(rgb_root.rglob(pattern))
 
 
-def artifacts_ready(rgb_path: str | Path, detail_root: str | Path) -> bool:
+def artifacts_ready(
+    rgb_path: str | Path,
+    detail_root: str | Path,
+    pre_depth_root: str | Path | None = None,
+) -> bool:
     rgb_path = Path(rgb_path)
     detail_root = Path(detail_root)
+    pre_depth_root = Path(pre_depth_root) if pre_depth_root is not None else detail_root
     return (
-        pre_depth_path(rgb_path, detail_root).is_file()
-        and valid_mask_path(rgb_path, detail_root).is_file()
+        pre_depth_path(rgb_path, pre_depth_root).is_file()
+        and valid_mask_path(rgb_path, pre_depth_root).is_file()
         and class_map_path(rgb_path, detail_root).is_file()
     )
 
@@ -76,22 +126,33 @@ class DetailTrainDataset(torch.utils.data.Dataset):
         rgb_paths: Optional[List[str]] = None,
         require_artifacts: bool = True,
         detection_score_thr: float = 0.5,
+        require_detections: bool = False,
+        manifest_path: Optional[str] = None,
+        pre_depth_root: Optional[str | Path] = None,
     ):
         self.rgb_root = Path(rgb_root)
         self.detail_root = Path(detail_root)
+        self.pre_depth_root = Path(pre_depth_root) if pre_depth_root is not None else self.detail_root
         self.transform = transform
         self.detection_score_thr = float(detection_score_thr)
 
-        if rgb_paths is None:
+        if manifest_path is not None:
+            rgb_paths, depth_paths, _ = load_detail_train_manifest(manifest_path)
+            self.rgb_paths = list(rgb_paths)
+            self.depth_paths = list(depth_paths)
+        elif rgb_paths is None:
             rgb_paths = [str(p) for p in list_rgb_images(self.rgb_root)]
-        self.rgb_paths = list(rgb_paths)
-        self.depth_paths = depth_paths or [self._guess_depth_path(p) for p in self.rgb_paths]
+            self.rgb_paths = list(rgb_paths)
+            self.depth_paths = depth_paths or [self._guess_depth_path(p) for p in self.rgb_paths]
+        else:
+            self.rgb_paths = list(rgb_paths)
+            self.depth_paths = depth_paths or [self._guess_depth_path(p) for p in self.rgb_paths]
 
         if require_artifacts:
             pairs = [
                 (rgb, depth)
                 for rgb, depth in zip(self.rgb_paths, self.depth_paths)
-                if artifacts_ready(rgb, self.detail_root)
+                if artifacts_ready(rgb, self.detail_root, self.pre_depth_root)
             ]
             if not pairs:
                 raise FileNotFoundError(
@@ -101,6 +162,25 @@ class DetailTrainDataset(torch.utils.data.Dataset):
             self.rgb_paths, self.depth_paths = zip(*pairs)
             self.rgb_paths = list(self.rgb_paths)
             self.depth_paths = list(self.depth_paths)
+
+        if require_detections:
+            before = len(self.rgb_paths)
+            self.rgb_paths, self.depth_paths = filter_paths_with_detections(
+                self.rgb_paths,
+                self.depth_paths,
+                self.detail_root,
+                detection_score_thr=self.detection_score_thr,
+            )
+            if not self.rgb_paths:
+                raise FileNotFoundError(
+                    f"No images with detections (score>={self.detection_score_thr}) under {self.detail_root}."
+                )
+            logger.info(
+                "Filtered to images with detections: %d -> %d (score>=%.2f)",
+                before,
+                len(self.rgb_paths),
+                self.detection_score_thr,
+            )
 
     def _guess_depth_path(self, rgb_path: str) -> str:
         p = Path(rgb_path)
@@ -126,7 +206,7 @@ class DetailTrainDataset(torch.utils.data.Dataset):
 
         pixel_values, depth_values, normal_values = self.transform(image, depth, fallback_normal)
 
-        pre_depth, valid_mask = load_pre_depth_artifacts(rgb_path, self.detail_root)
+        pre_depth, valid_mask = load_pre_depth_artifacts(rgb_path, self.pre_depth_root)
         if pre_depth is None or valid_mask is None:
             raise FileNotFoundError(f"Missing pre-depth artifacts for {rgb_path}")
 
@@ -191,9 +271,18 @@ def get_detail_train_dataset(
     truncnorm_min: float = 0.02,
     align_cam_normal: bool = False,
     detection_score_thr: float = 0.5,
+    require_detections: bool = False,
+    manifest_path: Optional[str] = None,
+    pre_depth_root: Optional[str] = None,
 ):
     """Build detail-train dataset using Hypersim index when possible."""
-    if rgb_root.startswith("hf://"):
+    manifest_rgb_paths: Optional[List[str]] = None
+    manifest_depth_paths: Optional[List[str]] = None
+    if manifest_path is not None:
+        manifest_rgb_paths, manifest_depth_paths, _ = load_detail_train_manifest(manifest_path)
+        rgb_paths = manifest_rgb_paths
+        depth_paths = manifest_depth_paths
+    elif rgb_root.startswith("hf://"):
         base_dataset, _, _ = get_hypersim_dataset_depth_normal(
             rgb_root,
             resolution,
@@ -249,6 +338,9 @@ def get_detail_train_dataset(
         depth_paths=depth_paths,
         require_artifacts=True,
         detection_score_thr=detection_score_thr,
+        require_detections=require_detections,
+        manifest_path=manifest_path,
+        pre_depth_root=pre_depth_root,
     )
 
     def preprocess_noop(examples):
