@@ -9,6 +9,14 @@ from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer, CLIPV
 import tensorboard
 from utils.image_utils import resize_max_res, get_tv_resample_method, resize_back, get_pil_resample_method
 from utils.pre_depth_fusion import downsample_condition_map, downsample_valid_mask, encode_pre_depth_latents
+from utils.object_attention_condition import (
+    ObjectAttentionEncoder,
+    encode_object_attention_condition,
+)
+from utils.object_spatial_attention import (
+    install_object_spatial_attention_processors,
+    object_cross_attention_kwargs,
+)
 from torchvision.transforms.functional import resize
 from torchvision.transforms import InterpolationMode
 
@@ -134,8 +142,15 @@ class DirectDiffusionPipeline(
             A `CLIPImageProcessor` to extract features from generated images; used as inputs to the `safety_checker`.
     """
 
-    model_cpu_offload_seq = "text_encoder->image_encoder->unet->vae"
-    _optional_components = ["safety_checker", "feature_extractor", "image_encoder"]
+    model_cpu_offload_seq = (
+        "text_encoder->image_encoder->object_condition_encoder->unet->vae"
+    )
+    _optional_components = [
+        "safety_checker",
+        "feature_extractor",
+        "image_encoder",
+        "object_condition_encoder",
+    ]
     _exclude_from_cpu_offload = ["safety_checker"]
     _callback_tensor_inputs = ["latents", "prompt_embeds", "negative_prompt_embeds"]
 
@@ -149,6 +164,7 @@ class DirectDiffusionPipeline(
         safety_checker: StableDiffusionSafetyChecker,
         feature_extractor: CLIPImageProcessor,
         image_encoder: CLIPVisionModelWithProjection = None,
+        object_condition_encoder: ObjectAttentionEncoder = None,
         requires_safety_checker: bool = True,
     ):
         super().__init__()
@@ -226,7 +242,11 @@ class DirectDiffusionPipeline(
             safety_checker=safety_checker,
             feature_extractor=feature_extractor,
             image_encoder=image_encoder,
+            object_condition_encoder=object_condition_encoder,
         )
+        self._enable_object_spatial_bias = object_condition_encoder is not None
+        if self._enable_object_spatial_bias:
+            install_object_spatial_attention_processors(unet)
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
         self.register_to_config(requires_safety_checker=requires_safety_checker)
@@ -1026,6 +1046,9 @@ class LotusDPipeline(DirectDiffusionPipeline):
         class_map: Optional[torch.FloatTensor] = None,
         size_w: Optional[torch.FloatTensor] = None,
         size_h: Optional[torch.FloatTensor] = None,
+        object_class_ids: Optional[torch.LongTensor] = None,
+        object_features: Optional[torch.FloatTensor] = None,
+        object_mask: Optional[torch.BoolTensor] = None,
         prompt: Union[str, List[str]] = None,
         timesteps: List[int] = None,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
@@ -1059,6 +1082,8 @@ class LotusDPipeline(DirectDiffusionPipeline):
             size_w / size_h (`torch.FloatTensor`, *optional*):
                 Optional normalized bbox size maps in [-1, 1], shape [B, 1, H, W].
                 Used with 12ch direct object conditioning.
+            object_class_ids / object_features / object_mask (`torch.Tensor`, *optional*):
+                Padded per-object conditions consumed by ObjectAttentionEncoder.
             prompt (`str` or `List[str]`, *optional*):
                 The prompt or prompts to guide image generation. If not defined, you need to pass `prompt_embeds`.
             timesteps (`List[int]`, *optional*):
@@ -1132,6 +1157,36 @@ class LotusDPipeline(DirectDiffusionPipeline):
             do_classifier_free_guidance=None,
             prompt_embeds=prompt_embeds,
         )
+        encoder_attention_mask = None
+        text_prompt_embeds = prompt_embeds
+        has_object_input = (
+            object_class_ids is not None
+            or object_features is not None
+            or object_mask is not None
+        )
+        if has_object_input:
+            if self.object_condition_encoder is None:
+                raise ValueError(
+                    "Object inputs were provided but this pipeline has no "
+                    "object_condition_encoder."
+                )
+            if (
+                object_class_ids is None
+                or object_features is None
+                or object_mask is None
+            ):
+                raise ValueError(
+                    "object_class_ids, object_features, and object_mask are all required."
+                )
+            prompt_embeds, encoder_attention_mask = (
+                encode_object_attention_condition(
+                    prompt_embeds,
+                    self.object_condition_encoder,
+                    object_class_ids,
+                    object_features,
+                    object_mask,
+                )
+            )
 
         # 3. Prepare timesteps
         timesteps = torch.tensor(timesteps, device=device).long()
@@ -1238,13 +1293,35 @@ class LotusDPipeline(DirectDiffusionPipeline):
                 )
                 latent_model_input = torch.cat([rgb_latents, zeros], dim=1)
 
+        cross_attn_kwargs = dict(self.cross_attention_kwargs or {})
+        if (
+            self._enable_object_spatial_bias
+            and object_features is not None
+            and object_mask is not None
+        ):
+            cross_attn_kwargs.update(
+                object_cross_attention_kwargs(
+                    object_features,
+                    object_mask,
+                    text_prompt_embeds,
+                    latent_model_input.shape[-2],
+                    latent_model_input.shape[-1],
+                    enabled=True,
+                )
+            )
+        if not cross_attn_kwargs:
+            cross_attn_kwargs = None
+
         pred = self.unet(
             latent_model_input,
             t,
             encoder_hidden_states=prompt_embeds,
-            cross_attention_kwargs=self.cross_attention_kwargs,
+            encoder_attention_mask=encoder_attention_mask,
+            cross_attention_kwargs=cross_attn_kwargs,
             return_dict=False,
-            class_labels=task_emb,
+            class_labels=task_emb.to(
+                device=latent_model_input.device, dtype=latent_model_input.dtype
+            ),
         )[0]
 
         if not output_type == "latent":

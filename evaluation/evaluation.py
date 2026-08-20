@@ -51,6 +51,7 @@ def evaluation_depth(output_dir, dataset_config, base_data_dir, eval_mode, pred_
                      alignment="least_square", alignment_max_res=None, prediction_dir=None, 
                      gen_prediction=None, pipeline=None, save_pred=False, save_pred_vis=False,
                      processing_res=None,
+                     sample_filter=None,
                      ):
     '''
     if eval_mode == "load_prediction": assert prediction_dir is not None
@@ -98,11 +99,16 @@ def evaluation_depth(output_dir, dataset_config, base_data_dir, eval_mode, pred_
         os.makedirs(save_vis_path, exist_ok=True)
 
     # -------------------- Evaluate --------------------
+    num_skipped = 0
     for data in tqdm(dataloader, desc=f"Evaluating {cfg_data.name}"):
         # GT data
         depth_raw_ts = data["depth_raw_linear"].squeeze()
         valid_mask_ts = data["valid_mask_raw"].squeeze()
         rgb_name = data["rgb_relative_path"][0]
+
+        if sample_filter is not None and not sample_filter(rgb_name):
+            num_skipped += 1
+            continue
 
         depth_raw = depth_raw_ts.numpy()
         valid_mask = valid_mask_ts.numpy()
@@ -134,7 +140,7 @@ def evaluation_depth(output_dir, dataset_config, base_data_dir, eval_mode, pred_
                 )
             else:
                 input_rgb = data["rgb_int"]
-            depth_pred = gen_prediction(input_rgb, pipeline)
+            depth_pred = gen_prediction(input_rgb, pipeline, rgb_name)
             # resize to original res
             if processing_res is not None:
                 depth_pred = torch.tensor(depth_pred).unsqueeze(0).unsqueeze(0)
@@ -254,6 +260,9 @@ def evaluation_depth(output_dir, dataset_config, base_data_dir, eval_mode, pred_
     with open(_save_to, "w+") as f:
         f.write(eval_text)
         logging.info(f"Evaluation metrics saved to {_save_to}")
+
+    if sample_filter is not None and num_skipped:
+        logging.info("Skipped %d validation samples via sample_filter", num_skipped)
     
     return metric_tracker
 

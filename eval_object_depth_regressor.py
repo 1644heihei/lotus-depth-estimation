@@ -112,9 +112,23 @@ def main():
     preds_baseline = []
     gts = []
     rows = []
+    current_img_path = None
+    current_img_np = None
+
     for it in items:
         rec = it.record
-        pred = bundle.predict_record(rec)
+        if bundle.config.get("roi_feature_dim", 0) > 0:
+            if it.rgb_path != current_img_path:
+                current_img_path = it.rgb_path
+                try:
+                    from PIL import Image
+
+                    with Image.open(it.rgb_path) as img:
+                        current_img_np = np.array(img.convert("RGB"))
+                except Exception as e:
+                    logger.warning("Could not open %s: %s", it.rgb_path, e)
+                    current_img_np = None
+        pred = bundle.predict_record(rec, rgb_np=current_img_np)
         pred_bc = baseline.predict_depth(rec.class_id)
         preds_mlp.append(pred)
         preds_baseline.append(pred_bc)

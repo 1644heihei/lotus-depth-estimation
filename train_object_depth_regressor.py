@@ -57,6 +57,8 @@ def parse_args():
         default="D:/lotus/data/hypersim_yolo_detections/train_manifest_score0.5.json",
     )
     p.add_argument("--output_dir", type=str, default="output/object_depth_regressor_v3")
+    p.add_argument("--roi_feature_cache", type=str, default=None, help="Optional .npz ROI visual features cache.")
+    p.add_argument("--roi_projection_dim", type=int, default=64, help="Dimension to project ROI features down to.")
     p.add_argument("--feature_version", type=int, default=2, choices=[1, 2, 3])
     p.add_argument("--split_level", choices=["image", "scene"], default="image")
     p.add_argument("--min_depth_m", type=float, default=0.05)
@@ -78,8 +80,11 @@ def parse_args():
 def evaluate_mlp(model, items, device, feature_version: int) -> dict:
     if not items:
         return compute_depth_metrics(np.array([]), np.array([]))
-    class_ids, features, depths = records_to_arrays(items, feature_version=feature_version)
-    preds = [predict_mlp_depth_m(model, int(cid), feat, device) for cid, feat in zip(class_ids, features)]
+    class_ids, features, depths, roi_features = records_to_arrays(items, feature_version=feature_version)
+    preds = []
+    for i, (cid, feat) in enumerate(zip(class_ids, features)):
+        roi_f = roi_features[i] if roi_features is not None else None
+        preds.append(predict_mlp_depth_m(model, int(cid), feat, device, roi_features=roi_f))
     return compute_depth_metrics(np.array(preds), depths)
 
 
@@ -93,16 +98,17 @@ def evaluate_baseline(baseline: BaselinePredictor, items, per_class: bool) -> di
 
 
 def evaluate_linear(linear: LinearDepthPredictor, items, feature_version: int) -> dict:
-    class_ids, features, depths = records_to_arrays(items, feature_version=feature_version)
+    class_ids, features, depths, _ = records_to_arrays(items, feature_version=feature_version)
     preds = [float(np.exp(linear.predict_log_depth(int(cid), feat))) for cid, feat in zip(class_ids, features)]
     return compute_depth_metrics(np.array(preds), np.array(depths))
 
 
 def evaluate_ensemble(model, linear, items, device, feature_version: int) -> dict:
-    class_ids, features, depths = records_to_arrays(items, feature_version=feature_version)
+    class_ids, features, depths, roi_features = records_to_arrays(items, feature_version=feature_version)
     preds = []
-    for cid, feat in zip(class_ids, features):
-        mlp_d = predict_mlp_depth_m(model, int(cid), feat, device)
+    for i, (cid, feat) in enumerate(zip(class_ids, features)):
+        roi_f = roi_features[i] if roi_features is not None else None
+        mlp_d = predict_mlp_depth_m(model, int(cid), feat, device, roi_features=roi_f)
         lin_d = float(np.exp(linear.predict_log_depth(int(cid), feat)))
         preds.append(float(np.exp(0.5 * (np.log(max(mlp_d, 1e-4)) + np.log(max(lin_d, 1e-4))))))
     return compute_depth_metrics(np.array(preds), depths)
@@ -116,7 +122,14 @@ def main():
     assert_hypersim_only(args.detail_root, "detail_root")
     assert_hypersim_only(args.manifest, "manifest")
 
-    items = load_records_from_manifest(args.manifest, args.detail_root)
+    roi_cache = None
+    if args.roi_feature_cache:
+        from utils.roi_feature_extractor import RoiFeatureCache
+
+        logger.info("Loading ROI feature cache from %s ...", args.roi_feature_cache)
+        roi_cache = RoiFeatureCache.load(args.roi_feature_cache)
+
+    items = load_records_from_manifest(args.manifest, args.detail_root, roi_cache=roi_cache)
     if not items:
         raise FileNotFoundError("No object records found.")
     before = len(items)
@@ -126,10 +139,14 @@ def main():
     split_fn = scene_level_split if args.split_level == "scene" else image_level_split
     train_items, val_items = split_fn(items, val_ratio=args.val_ratio, seed=args.seed)
     feat_dim = feature_dim_for_version(args.feature_version)
+    has_roi = any(it.roi_feature is not None for it in train_items)
+    roi_feat_dim = 512 if has_roi else 0
+
     logger.info(
-        "feature_v=%d dim=%d records total=%d train=%d val=%d",
+        "feature_v=%d dim=%d roi_dim=%d records total=%d train=%d val=%d",
         args.feature_version,
         feat_dim,
+        roi_feat_dim,
         len(items),
         len(train_items),
         len(val_items),
@@ -147,6 +164,8 @@ def main():
         feature_dim=feat_dim,
         hidden=tuple(args.hidden),
         dropout=args.dropout,
+        roi_feature_dim=roi_feat_dim,
+        roi_projection_dim=args.roi_projection_dim,
     ).to(device)
     optim = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     criterion = nn.SmoothL1Loss() if args.huber_loss else nn.L1Loss()
@@ -162,7 +181,10 @@ def main():
             cid = batch["class_id"].to(device)
             feat = batch["features"].to(device)
             target = batch["log_depth"].to(device)
-            pred = model(cid, feat)
+            roi_feat = batch.get("roi_features")
+            if roi_feat is not None:
+                roi_feat = roi_feat.to(device)
+            pred = model(cid, feat, roi_features=roi_feat)
             loss = criterion(pred, target)
             optim.zero_grad()
             loss.backward()
@@ -207,6 +229,8 @@ def main():
         "split_level": args.split_level,
         "num_records_train": len(train_items),
         "num_records_val": len(val_items),
+        "roi_feature_dim": roi_feat_dim,
+        "roi_projection_dim": args.roi_projection_dim,
         "selected_model_type": model_type,
         "mlp_val": val_mlp,
         "linear_val": val_lin,
@@ -231,6 +255,8 @@ def main():
         "processing_res": 512,
         "precision": "float32",
         "record_schema_version": OBJECT_RECORD_SCHEMA_VERSION,
+        "roi_feature_dim": roi_feat_dim,
+        "roi_projection_dim": args.roi_projection_dim,
     }
     save_model_bundle(args.output_dir, model, baseline, linear, config)
     split_manifest = {

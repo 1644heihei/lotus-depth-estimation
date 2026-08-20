@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from diffusers import UNet2DConditionModel
 from PIL import Image
 from tqdm.auto import tqdm
 
@@ -27,12 +28,23 @@ from utils.object_depth_regressor import ObjectDepthRegressorBundle
 from utils.object_detection_cache import detections_to_mask, load_detections
 from utils.object_pre_depth import CoreDepthPredictor, load_pre_depth_artifacts
 from utils.object_pre_depth_regressor import build_pre_depth_for_rgb
+from utils.object_attention_condition import (
+    ObjectAttentionEncoder,
+    padded_object_condition_from_detections,
+)
+from utils.object_spatial_attention import install_object_spatial_attention_processors
 from utils.seed_all import seed_all
 
 
 def parse_args():
     p = argparse.ArgumentParser(description="NYUv2 eval with regressor pre-depth.")
     p.add_argument("--detail_model", type=str, required=True)
+    p.add_argument(
+        "--checkpoint_step",
+        type=int,
+        default=None,
+        help="Load UNet/object encoder weights from {detail_model}/checkpoint-{step}.",
+    )
     p.add_argument("--regressor_dir", type=str, required=True)
     p.add_argument(
         "--regressor_model_type",
@@ -64,15 +76,28 @@ def parse_args():
     p.add_argument(
         "--condition_mode",
         type=str,
-        choices=["regressor", "cached", "unconditioned"],
+        choices=[
+            "regressor",
+            "cached",
+            "unconditioned",
+            "attention",
+            "attention_off",
+        ],
         default="regressor",
     )
     p.add_argument("--pre_depth_root", type=str, default=None)
     p.add_argument("--detection_score_thr", type=float, default=None)
+    p.add_argument(
+        "--min_detections",
+        type=int,
+        default=0,
+        help="Evaluate only images with at least this many detections (score-filtered).",
+    )
     p.add_argument("--timestep", type=int, default=999)
     p.add_argument("--processing_res", type=int, default=None)
     p.add_argument("--half_precision", action="store_true")
     p.add_argument("--max_images", type=int, default=0)
+    p.add_argument("--max_objects", type=int, default=16)
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
 
@@ -93,6 +118,31 @@ def list_scannet_pairs(rgb_dir: Path):
         if depth_path.is_file():
             pairs.append((rgb_path, depth_path))
     return pairs
+
+
+def count_detections(
+    rgb_path: Path, detail_root: Path, detection_score_thr: float
+) -> int:
+    return sum(
+        1
+        for detection in load_detections(rgb_path, detail_root)
+        if detection.score >= detection_score_thr
+    )
+
+
+def filter_pairs_by_min_detections(
+    pairs: list[tuple[Path, Path]],
+    detail_root: Path,
+    detection_score_thr: float,
+    min_detections: int,
+) -> tuple[list[tuple[Path, Path]], int]:
+    if min_detections <= 0:
+        return pairs, 0
+    kept: list[tuple[Path, Path]] = []
+    for rgb_path, depth_path in pairs:
+        if count_detections(rgb_path, detail_root, detection_score_thr) >= min_detections:
+            kept.append((rgb_path, depth_path))
+    return kept, len(pairs) - len(kept)
 
 
 def eigen_valid_mask(h: int, w: int) -> np.ndarray:
@@ -133,7 +183,16 @@ def score_prediction(
 
 
 @torch.no_grad()
-def predict_detail(pipe, rgb_np, pre_depth_norm, valid_mask, timestep, processing_res, generator):
+def predict_detail(
+    pipe,
+    rgb_np,
+    pre_depth_norm,
+    valid_mask,
+    timestep,
+    processing_res,
+    generator,
+    object_condition=None,
+):
     device = pipe.device
     image = torch.from_numpy(rgb_np.astype(np.float32)).permute(2, 0, 1).unsqueeze(0)
     image = image / 127.5 - 1.0
@@ -160,6 +219,13 @@ def predict_detail(pipe, rgb_np, pre_depth_norm, valid_mask, timestep, processin
         )
         kwargs["pre_depth"] = pre_t
         kwargs["pre_depth_valid_mask"] = valid_t
+    if object_condition is not None:
+        class_ids, object_features, object_mask = object_condition
+        kwargs.update(
+            object_class_ids=class_ids,
+            object_features=object_features,
+            object_mask=object_mask,
+        )
     if torch.backends.mps.is_available():
         ctx = nullcontext()
     else:
@@ -186,21 +252,41 @@ def main():
     )
     if args.max_images > 0:
         pairs = pairs[: args.max_images]
+    num_images_total = len(pairs)
 
     dtype = torch.float16 if args.half_precision else torch.float32
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     generator = torch.Generator(device=device).manual_seed(args.seed)
 
     detail_pipe = LotusDPipeline.from_pretrained(args.detail_model, torch_dtype=dtype).to(device)
+    if args.checkpoint_step is not None:
+        ckpt_dir = Path(args.detail_model) / f"checkpoint-{args.checkpoint_step}"
+        if not ckpt_dir.is_dir():
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt_dir}")
+        detail_pipe.unet = UNet2DConditionModel.from_pretrained(
+            ckpt_dir, subfolder="unet", torch_dtype=dtype
+        ).to(device)
+        if detail_pipe.object_condition_encoder is not None and (
+            ckpt_dir / "object_condition_encoder"
+        ).is_dir():
+            detail_pipe.object_condition_encoder = ObjectAttentionEncoder.from_pretrained(
+                ckpt_dir, subfolder="object_condition_encoder", torch_dtype=dtype
+            ).to(device)
+            install_object_spatial_attention_processors(detail_pipe.unet)
+        logging.info("Loaded checkpoint weights from %s", ckpt_dir)
+    elif detail_pipe.object_condition_encoder is not None:
+        install_object_spatial_attention_processors(detail_pipe.unet)
     detail_pipe.set_progress_bar_config(disable=True)
     in_ch = int(detail_pipe.unet.config.in_channels)
-    if in_ch != 9:
+    expected_channels = (
+        9 if args.condition_mode in ("regressor", "cached") else 4
+    )
+    if in_ch != expected_channels:
         raise ValueError(
-            f"Regressor pre-depth evaluation requires a 9ch detail model, got in_channels={in_ch}."
+            f"{args.condition_mode} evaluation requires a {expected_channels}ch "
+            f"detail model, got in_channels={in_ch}."
         )
 
-    core_pipe = LotusDPipeline.from_pretrained(args.core_model, torch_dtype=dtype).to(device)
-    core_pipe.set_progress_bar_config(disable=True)
     regressor = ObjectDepthRegressorBundle.load(args.regressor_dir, device=device)
     if args.regressor_model_type != "config":
         regressor.model_type = args.regressor_model_type
@@ -209,14 +295,35 @@ def main():
         if args.detection_score_thr is not None
         else float(regressor.config.get("detection_score_thr", 0.5))
     )
+    pairs, num_skipped = filter_pairs_by_min_detections(
+        pairs, detail_root, detection_score_thr, args.min_detections
+    )
+    if args.min_detections > 0:
+        logging.info(
+            "Filtered to images with >= %d detections: %d -> %d (skipped %d)",
+            args.min_detections,
+            num_images_total,
+            len(pairs),
+            num_skipped,
+        )
+    if not pairs:
+        raise RuntimeError(
+            f"No images remain after --min_detections={args.min_detections}."
+        )
     processing_res = (
         args.processing_res
         if args.processing_res is not None
         else regressor.config.get("processing_res")
     )
-    core_predictor = CoreDepthPredictor(
-        core_pipe, processing_res=processing_res, generator=generator
-    )
+    core_predictor = None
+    if args.condition_mode == "regressor":
+        core_pipe = LotusDPipeline.from_pretrained(
+            args.core_model, torch_dtype=dtype
+        ).to(device)
+        core_pipe.set_progress_bar_config(disable=True)
+        core_predictor = CoreDepthPredictor(
+            core_pipe, processing_res=processing_res, generator=generator
+        )
 
     rows = []
     roi_absrels = []
@@ -225,15 +332,16 @@ def main():
         gt = np.array(Image.open(depth_path)).astype(np.float64) / 1000.0
         h, w = rgb_np.shape[:2]
 
+        dets = [
+            d
+            for d in load_detections(rgb_path, detail_root)
+            if d.score >= detection_score_thr
+        ]
+        n_det = len(dets)
+        roi_mask = detections_to_mask(dets, h, w)
         pre_depth = valid = None
-        n_det = 0
+        object_condition = None
         if args.condition_mode == "regressor":
-            dets = [
-                d
-                for d in load_detections(rgb_path, detail_root)
-                if d.score >= detection_score_thr
-            ]
-            n_det = len(dets)
             pre_depth, valid, _ = build_pre_depth_for_rgb(
                 rgb_np, dets, regressor, core_predictor
             )
@@ -243,6 +351,11 @@ def main():
             pre_depth, valid = load_pre_depth_artifacts(
                 rgb_path, args.pre_depth_root
             )
+        elif args.condition_mode in ("attention", "attention_off"):
+            if args.condition_mode == "attention":
+                object_condition = padded_object_condition_from_detections(
+                    dets, w, h, regressor, args.max_objects
+                )
 
         pred = predict_detail(
             detail_pipe,
@@ -252,6 +365,7 @@ def main():
             args.timestep,
             processing_res,
             generator,
+            object_condition,
         )
         absrel, d1 = score_prediction(
             pred, gt, use_eigen_crop=args.dataset == "nyuv2"
@@ -262,13 +376,13 @@ def main():
         rel = str(rgb_path.relative_to(rgb_dir)).replace("\\", "/")
         rows.append({"filename": rel, "abs_relative_difference": absrel, "delta1_acc": d1, "n_detections": n_det})
 
-        if n_det > 0 and valid is not None:
+        if n_det > 0:
             spatial_mask = (
                 eigen_valid_mask(h, w)
                 if args.dataset == "nyuv2"
                 else np.ones((h, w), dtype=bool)
             )
-            vm = spatial_mask & (valid > 0.5)
+            vm = spatial_mask & (roi_mask > 0.5)
             gt_valid = np.isfinite(gt) & (gt > 1e-3) & (gt < 10.0) & vm
             if gt_valid.sum() > 100:
                 gt_disp, gt_nn = depth2disparity(depth=gt, return_mask=True)
@@ -291,16 +405,41 @@ def main():
 
     mean_absrel = float(np.mean([r["abs_relative_difference"] for r in rows]))
     mean_d1 = float(np.mean([r["delta1_acc"] for r in rows]))
+    object_count_metrics = {}
+    count_groups = {
+        "0": lambda n: n == 0,
+        "1": lambda n: n == 1,
+        "2-3": lambda n: 2 <= n <= 3,
+        "4+": lambda n: n >= 4,
+    }
+    for label, predicate in count_groups.items():
+        grouped = [row for row in rows if predicate(row["n_detections"])]
+        if grouped:
+            object_count_metrics[label] = {
+                "count": len(grouped),
+                "abs_rel": float(
+                    np.mean([row["abs_relative_difference"] for row in grouped])
+                ),
+                "delta1": float(
+                    np.mean([row["delta1_acc"] for row in grouped])
+                ),
+            }
     summary = {
         "detail_model": args.detail_model,
+        "checkpoint_step": args.checkpoint_step,
         "regressor_dir": args.regressor_dir,
         "regressor_model_type": regressor.model_type,
         "condition_mode": args.condition_mode,
+        "min_detections": args.min_detections,
+        "detection_score_thr": detection_score_thr,
+        "num_images_total": num_images_total,
+        "num_images_skipped": num_skipped,
         "num_images": len(rows),
         "dataset": args.dataset,
         "abs_rel": mean_absrel,
         "delta1": mean_d1,
         "roi_abs_rel": float(np.mean(roi_absrels)) if roi_absrels else None,
+        "object_count_metrics": object_count_metrics,
     }
 
     with (out_dir / "per_sample_metrics.csv").open("w", newline="", encoding="utf-8") as f:
@@ -318,6 +457,8 @@ def main():
         f"regressor_model_type={regressor.model_type}\n"
         f"in_channels={in_ch}\n"
         f"condition_mode={args.condition_mode}\n"
+        f"min_detections={args.min_detections}\n"
+        f"num_images={len(rows)}/{num_images_total}\n"
         f"abs_rel={mean_absrel:.6f}\n"
         f"delta1={mean_d1:.6f}\n"
         f"roi_abs_rel={summary['roi_abs_rel']}\n"

@@ -62,6 +62,16 @@ from utils.pre_depth_fusion import (
 )
 from utils.pre_depth_synth import synthesize_pre_depth
 from utils.detail_train_dataset import get_detail_train_dataset
+from utils.object_attention_condition import (
+    ObjectAttentionCache,
+    ObjectAttentionEncoder,
+    apply_object_condition_dropout,
+    encode_object_attention_condition,
+)
+from utils.object_spatial_attention import (
+    install_object_spatial_attention_processors,
+    object_cross_attention_kwargs,
+)
 from utils.vkitti_dataset import VKITTIDataset, VKITTITransform, collate_fn_vkitti
 
 from eval import evaluation_depth, evaluation_normal
@@ -138,7 +148,84 @@ def apply_pre_depth_dropout(
     return tuple(outs)
 
 
-def run_example_validation(pipeline, task, args, step, accelerator, generator):
+def _object_attention_eval_cache(args):
+    if not args.enable_object_attention or not args.object_attention_eval_cache:
+        return None
+    return ObjectAttentionCache.load(args.object_attention_eval_cache)
+
+
+def _validation_sample_filter(args, object_attention_eval_cache=None):
+    min_detections = int(args.validation_min_detections)
+    if min_detections <= 0:
+        return None
+
+    score_thr = float(args.detection_score_thr)
+
+    def detection_count(rgb_relative_path: str) -> int:
+        if object_attention_eval_cache is not None:
+            return object_attention_eval_cache.object_count(
+                rgb_relative_path,
+                rgb_root=args.object_attention_eval_rgb_dir,
+            )
+        if not args.validation_detections_root:
+            raise ValueError(
+                "--validation_min_detections requires --object_attention_eval_cache "
+                "or --validation_detections_root."
+            )
+        if not args.object_attention_eval_rgb_dir:
+            raise ValueError(
+                "--validation_min_detections with --validation_detections_root "
+                "requires --object_attention_eval_rgb_dir."
+            )
+        rgb_path = Path(args.object_attention_eval_rgb_dir) / rgb_relative_path
+        from utils.object_detection_cache import load_detections
+
+        return sum(
+            1
+            for detection in load_detections(rgb_path, args.validation_detections_root)
+            if detection.score >= score_thr
+        )
+
+    def sample_filter(rgb_relative_path: str) -> bool:
+        return detection_count(rgb_relative_path) >= min_detections
+
+    return sample_filter
+
+
+def _object_attention_pipe_kwargs(
+    cache: ObjectAttentionCache | None,
+    image_path: str | Path | None,
+    args,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> dict:
+    if cache is None or image_path is None:
+        return {}
+    class_ids, features, mask = cache.padded_for_eval(
+        image_path,
+        args.max_objects,
+        rgb_root=args.object_attention_eval_rgb_dir,
+    )
+    if not mask.any():
+        return {}
+    return {
+        "object_class_ids": torch.from_numpy(class_ids).unsqueeze(0).to(device),
+        "object_features": torch.from_numpy(features)
+        .unsqueeze(0)
+        .to(device=device, dtype=dtype),
+        "object_mask": torch.from_numpy(mask).unsqueeze(0).to(device),
+    }
+
+
+def run_example_validation(
+    pipeline,
+    task,
+    args,
+    step,
+    accelerator,
+    generator,
+    object_attention_eval_cache=None,
+):
     validation_images = glob(os.path.join(args.validation_images, "*.jpg")) + glob(os.path.join(args.validation_images, "*.png"))
     validation_images = sorted(validation_images)
     print(validation_images)
@@ -165,6 +252,14 @@ def run_example_validation(pipeline, task, args, step, accelerator, generator):
                 task_emb = torch.tensor([1, 0]).float().unsqueeze(0).repeat(1, 1).to(accelerator.device)
                 task_emb = torch.cat([torch.sin(task_emb), torch.cos(task_emb)], dim=-1).repeat(1, 1)
 
+                object_kwargs = _object_attention_pipe_kwargs(
+                    object_attention_eval_cache,
+                    validation_images[i],
+                    args,
+                    accelerator.device,
+                    validation_image.dtype,
+                )
+
                 # Run
                 pred_depth = pipeline(
                     rgb_in=validation_image, 
@@ -172,7 +267,8 @@ def run_example_validation(pipeline, task, args, step, accelerator, generator):
                     prompt="", 
                     timesteps=[args.timestep],
                     output_type='np',
-                    generator=generator, 
+                    generator=generator,
+                    **object_kwargs,
                     ).images[0]
                 
                 # Post-process the prediction
@@ -221,9 +317,16 @@ def run_example_validation(pipeline, task, args, step, accelerator, generator):
     os.makedirs(save_dir, exist_ok=True)
     save_output.save(os.path.join(save_dir, f'{step:05d}.jpg'))
 
-def run_evaluation(pipeline, task, args, step, accelerator):
+def run_evaluation(
+    pipeline,
+    task,
+    args,
+    step,
+    accelerator,
+    object_attention_eval_cache=None,
+):
     # Define prediction functions
-    def gen_depth(rgb_in, pipe, prompt=""):
+    def gen_depth(rgb_in, pipe, rgb_relative_path=None, prompt=""):
         if torch.backends.mps.is_available():
                 autocast_ctx = nullcontext()
         else:
@@ -235,12 +338,21 @@ def run_evaluation(pipeline, task, args, step, accelerator):
             task_emb = torch.tensor([1, 0]).float().unsqueeze(0).repeat(1, 1).to(pipe.device)
             task_emb = torch.cat([torch.sin(task_emb), torch.cos(task_emb)], dim=-1).repeat(1, 1)
 
+            object_kwargs = _object_attention_pipe_kwargs(
+                object_attention_eval_cache,
+                rgb_relative_path,
+                args,
+                pipe.device,
+                rgb_input.dtype,
+            )
+
             pred_depth = pipe(
                             rgb_in=rgb_input, 
                             task_emb=task_emb,
                             prompt=prompt, 
                             timesteps=[args.timestep],
                             output_type='np',
+                            **object_kwargs,
                             ).images[0]
             pred_depth = pred_depth.mean(axis=-1) # [0,1]
         return pred_depth
@@ -281,12 +393,21 @@ def run_evaluation(pipeline, task, args, step, accelerator):
                 "diode": "configs/data_diode_all.yaml",
             }
             LEADER_DATASET = list(test_depth_dataset_configs.keys())[0]
+            validation_sample_filter = _validation_sample_filter(
+                args, object_attention_eval_cache
+            )
+            if validation_sample_filter is not None:
+                print(
+                    f"Validation min_detections={args.validation_min_detections} "
+                    f"(score>={args.detection_score_thr})"
+                )
             for dataset_name, config_path in test_depth_dataset_configs.items():
                 eval_dir = os.path.join(args.output_dir, f'evaluation-{step:05d}', task, dataset_name)
                 test_dataset_config = os.path.join(test_data_dir, config_path)
                 alignment_type = "least_square_disparity" if "disparity" in args.norm_type else "least_square"
                 metric_tracker = evaluation_depth(eval_dir, test_dataset_config, test_data_dir, eval_mode="generate_prediction",
-                            gen_prediction=gen_depth, pipeline=pipeline, save_pred_vis=args.save_pred_vis, alignment=alignment_type)
+                            gen_prediction=gen_depth, pipeline=pipeline, save_pred_vis=args.save_pred_vis, alignment=alignment_type,
+                            sample_filter=validation_sample_filter)
                 print(dataset_name,',', 'abs_relative_difference: ', metric_tracker.result()['abs_relative_difference'], 'delta1_acc: ', metric_tracker.result()['delta1_acc'])
                 
                 if dataset_name == LEADER_DATASET:
@@ -334,9 +455,25 @@ def run_evaluation(pipeline, task, args, step, accelerator):
         else:
             raise ValueError(f"Not Supported Task: {args.task_name}!")
 
-def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight_dtype, step):
+def log_validation(
+    vae,
+    text_encoder,
+    tokenizer,
+    unet,
+    object_attention_encoder,
+    args,
+    accelerator,
+    weight_dtype,
+    step,
+):
     logger.info("Running validation for task: %s... " % args.task_name[0])
     task = args.task_name[0]
+    object_attention_eval_cache = _object_attention_eval_cache(args)
+    if object_attention_eval_cache is not None:
+        logger.info(
+            "Validation object attention cache: %s",
+            args.object_attention_eval_cache,
+        )
 
     # Load pipeline
     pipeline = LotusDPipeline.from_pretrained(
@@ -345,6 +482,11 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
         text_encoder=accelerator.unwrap_model(text_encoder),
         tokenizer=tokenizer,
         unet=accelerator.unwrap_model(unet),
+        object_condition_encoder=(
+            accelerator.unwrap_model(object_attention_encoder)
+            if object_attention_encoder is not None
+            else None
+        ),
         safety_checker=None,
         revision=args.revision,
         variant=args.variant,
@@ -362,10 +504,25 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
         generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
     
     # Run example-validation
-    run_example_validation(pipeline, task, args, step, accelerator, generator)
+    run_example_validation(
+        pipeline,
+        task,
+        args,
+        step,
+        accelerator,
+        generator,
+        object_attention_eval_cache=object_attention_eval_cache,
+    )
     
     # Run evaluation
-    run_evaluation(pipeline, task, args, step, accelerator)
+    run_evaluation(
+        pipeline,
+        task,
+        args,
+        step,
+        accelerator,
+        object_attention_eval_cache=object_attention_eval_cache,
+    )
     
     del pipeline
     torch.cuda.empty_cache()
@@ -550,6 +707,62 @@ def parse_args():
             "Use direct (non-VAE) class_map + size_w + size_h channels (12ch total). "
             "Requires --enable_object_condition. Class/size are co-rasterized per bbox."
         ),
+    )
+    parser.add_argument(
+        "--enable_object_attention",
+        action="store_true",
+        help="Append regressor object tokens to UNet cross-attention (4ch RGB path).",
+    )
+    parser.add_argument(
+        "--object_attention_cache",
+        type=str,
+        default=None,
+        help="Single-NPZ object attention cache for the detail training images.",
+    )
+    parser.add_argument(
+        "--object_attention_eval_cache",
+        type=str,
+        default=None,
+        help="Object attention cache for NYUv2 validation during training.",
+    )
+    parser.add_argument(
+        "--object_attention_eval_rgb_dir",
+        type=str,
+        default=None,
+        help="RGB root used to resolve NYUv2 relative paths against object_attention_eval_cache.",
+    )
+    parser.add_argument(
+        "--validation_min_detections",
+        type=int,
+        default=0,
+        help="During NYUv2 validation, evaluate only images with at least this many detections.",
+    )
+    parser.add_argument(
+        "--validation_detections_root",
+        type=str,
+        default=None,
+        help="YOLO detection root for validation_min_detections when eval cache is unavailable.",
+    )
+    parser.add_argument("--max_objects", type=int, default=16)
+    parser.add_argument("--object_attention_dropout_p", type=float, default=0.05)
+    parser.add_argument("--object_encoder_lr", type=float, default=1e-4)
+    parser.add_argument(
+        "--enable_object_spatial_bias",
+        action="store_true",
+        default=True,
+        help="Add bbox-aware spatial bias to object cross-attention (default: on).",
+    )
+    parser.add_argument(
+        "--disable_object_spatial_bias",
+        action="store_false",
+        dest="enable_object_spatial_bias",
+        help="Disable bbox-aware spatial bias for object cross-attention.",
+    )
+    parser.add_argument(
+        "--object_attention_encoder_path",
+        type=str,
+        default=None,
+        help="Optional ObjectAttentionEncoder checkpoint directory.",
     )
     parser.add_argument(
         "--pre_depth_dropout_p",
@@ -921,6 +1134,45 @@ def main():
         raise ValueError("--enable_object_condition requires --enable_pre_depth_fusion")
     if args.enable_bbox_size_condition and not args.enable_object_condition:
         raise ValueError("--enable_bbox_size_condition requires --enable_object_condition")
+    if args.enable_object_attention:
+        if args.enable_pre_depth_fusion:
+            raise ValueError(
+                "The attention-only experiment must not enable pre-depth fusion."
+            )
+        if not args.object_attention_cache:
+            raise ValueError(
+                "--enable_object_attention requires --object_attention_cache"
+            )
+        if args.random_flip:
+            raise ValueError(
+                "Object attention cache coordinates are incompatible with --random_flip."
+            )
+        if args.validation_images and not args.object_attention_eval_cache:
+            raise ValueError(
+                "--enable_object_attention requires --object_attention_eval_cache "
+                "when --validation_images is set."
+            )
+        if args.object_attention_eval_cache and not args.object_attention_eval_rgb_dir:
+            raise ValueError(
+                "--object_attention_eval_cache requires --object_attention_eval_rgb_dir."
+            )
+        if args.validation_min_detections > 0:
+            if not args.validation_images:
+                raise ValueError(
+                    "--validation_min_detections requires --validation_images."
+                )
+            if (
+                not args.object_attention_eval_cache
+                and not args.validation_detections_root
+            ):
+                raise ValueError(
+                    "--validation_min_detections requires --object_attention_eval_cache "
+                    "or --validation_detections_root."
+                )
+            if args.validation_detections_root and not args.object_attention_eval_rgb_dir:
+                raise ValueError(
+                    "--validation_detections_root requires --object_attention_eval_rgb_dir."
+                )
     if args.enable_pre_depth_fusion:
         # 9ch:  RGB(4)+pre(4)+valid(1)                         extra=5
         # 13ch: + class_map VAE(4)                              extra=9
@@ -932,6 +1184,21 @@ def main():
         else:
             extra = 5
         expand_unet_conv_in(unet, extra_in_channels=extra, zero_init=True)
+
+    object_attention_encoder = None
+    if args.enable_object_attention:
+        if args.object_attention_encoder_path:
+            object_attention_encoder = ObjectAttentionEncoder.from_pretrained(
+                args.object_attention_encoder_path
+            )
+        else:
+            object_attention_encoder = ObjectAttentionEncoder(
+                cross_attention_dim=int(unet.config.cross_attention_dim)
+            )
+        object_attention_encoder.train()
+        if args.enable_object_spatial_bias:
+            install_object_spatial_attention_processors(unet)
+            logger.info("Installed object spatial cross-attention processors on UNet attn2.")
 
     # Freeze vae and text_encoder and set unet to trainable
     vae.requires_grad_(False)
@@ -956,23 +1223,30 @@ def main():
         # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
         def save_model_hook(models, weights, output_dir):
             if accelerator.is_main_process:
-                for i, model in enumerate(models):
-                    model.save_pretrained(os.path.join(output_dir, "unet"))
-
-                    # make sure to pop weight so that corresponding model is not saved again
+                for model in models:
+                    unwrapped = accelerator.unwrap_model(model)
+                    if isinstance(unwrapped, ObjectAttentionEncoder):
+                        unwrapped.save_pretrained(
+                            os.path.join(output_dir, "object_condition_encoder")
+                        )
+                    else:
+                        unwrapped.save_pretrained(os.path.join(output_dir, "unet"))
                     weights.pop()
 
         def load_model_hook(models, input_dir):
-            for _ in range(len(models)):
-                # pop models so that they are not loaded again
+            while models:
                 model = models.pop()
-
-                # load diffusers style into model
-                load_model = UNet2DConditionModel.from_pretrained(
-                    input_dir, subfolder="unet")
-                model.register_to_config(**load_model.config)
-
-                model.load_state_dict(load_model.state_dict())
+                unwrapped = accelerator.unwrap_model(model)
+                if isinstance(unwrapped, ObjectAttentionEncoder):
+                    load_model = ObjectAttentionEncoder.from_pretrained(
+                        input_dir, subfolder="object_condition_encoder"
+                    )
+                else:
+                    load_model = UNet2DConditionModel.from_pretrained(
+                        input_dir, subfolder="unet"
+                    )
+                unwrapped.register_to_config(**load_model.config)
+                unwrapped.load_state_dict(load_model.state_dict())
                 del load_model
 
         accelerator.register_save_state_pre_hook(save_model_hook)
@@ -1004,9 +1278,20 @@ def main():
     else:
         optimizer_cls = torch.optim.AdamW
 
+    unet_parameters = list(unet.parameters())
+    trainable_parameters = list(unet_parameters)
+    parameter_groups = [{"params": unet_parameters, "lr": args.learning_rate}]
+    if object_attention_encoder is not None:
+        encoder_parameters = list(object_attention_encoder.parameters())
+        trainable_parameters.extend(encoder_parameters)
+        parameter_groups.append(
+            {
+                "params": encoder_parameters,
+                "lr": args.object_encoder_lr,
+            }
+        )
     optimizer = optimizer_cls(
-        unet.parameters(),
-        lr=args.learning_rate,
+        parameter_groups,
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
@@ -1015,8 +1300,10 @@ def main():
     # Get the datasets and dataloaders
     use_detail_dataset = args.detail_train_data_dir is not None and len(str(args.detail_train_data_dir).strip()) > 0
     if use_detail_dataset:
-        if not args.enable_pre_depth_fusion:
-            raise ValueError("--detail_train_data_dir requires --enable_pre_depth_fusion")
+        if not (args.enable_pre_depth_fusion or args.enable_object_attention):
+            raise ValueError(
+                "--detail_train_data_dir requires pre-depth fusion or object attention"
+            )
         train_detail_dataset, preprocess_train_detail, collate_fn_detail = get_detail_train_dataset(
             args.train_data_dir_hypersim,
             args.detail_train_data_dir,
@@ -1029,6 +1316,8 @@ def main():
             require_detections=args.require_detections,
             manifest_path=args.detail_train_manifest,
             pre_depth_root=args.pre_depth_artifacts_dir,
+            object_attention_cache_path=args.object_attention_cache,
+            max_objects=args.max_objects,
         )
         train_dataset_hypersim = train_detail_dataset
         train_dataloader_hypersim = torch.utils.data.DataLoader(
@@ -1098,9 +1387,36 @@ def main():
     )
 
     # Prepare everything with our `accelerator`.
-    unet, optimizer, train_dataloader_hypersim, train_dataloader_vkitti, lr_scheduler = accelerator.prepare(
-        unet, optimizer, train_dataloader_hypersim, train_dataloader_vkitti, lr_scheduler
-    )
+    if object_attention_encoder is not None:
+        (
+            unet,
+            object_attention_encoder,
+            optimizer,
+            train_dataloader_hypersim,
+            train_dataloader_vkitti,
+            lr_scheduler,
+        ) = accelerator.prepare(
+            unet,
+            object_attention_encoder,
+            optimizer,
+            train_dataloader_hypersim,
+            train_dataloader_vkitti,
+            lr_scheduler,
+        )
+    else:
+        (
+            unet,
+            optimizer,
+            train_dataloader_hypersim,
+            train_dataloader_vkitti,
+            lr_scheduler,
+        ) = accelerator.prepare(
+            unet,
+            optimizer,
+            train_dataloader_hypersim,
+            train_dataloader_vkitti,
+            lr_scheduler,
+        )
 
     # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora unet) to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
@@ -1147,6 +1463,12 @@ def main():
         logger.info(f"  Detection score thr (train-time filter): {args.detection_score_thr}")
         logger.info(f"  Detail train manifest: {args.detail_train_manifest}")
         logger.info(f"  Require detections only: {args.require_detections}")
+        logger.info(f"  Object attention: {args.enable_object_attention}")
+        if args.enable_object_attention:
+            logger.info(f"  Object attention cache: {args.object_attention_cache}")
+            logger.info(f"  Max objects: {args.max_objects}")
+            logger.info(f"  Object attention dropout: {args.object_attention_dropout_p}")
+            logger.info(f"  Object spatial bias: {args.enable_object_spatial_bias}")
     logger.info(f"  Disable RGB reconstruction: {args.disable_rgb_reconstruction}")
     logger.info(f"  Enable object condition (class_map): {args.enable_object_condition}")
     logger.info(f"  Enable bbox size condition (12ch direct): {args.enable_bbox_size_condition}")
@@ -1158,6 +1480,11 @@ def main():
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
+    train_models = (
+        (unet, object_attention_encoder)
+        if object_attention_encoder is not None
+        else (unet,)
+    )
     logger.info(f"  Unet timestep = {args.timestep}")
     logger.info(f"  Task name: {args.task_name}")
     logger.info(f"  Is Full Evaluation?: {args.FULL_EVALUATION}")
@@ -1209,6 +1536,7 @@ def main():
             text_encoder,
             tokenizer,
             unet,
+            object_attention_encoder,
             args,
             accelerator,
             weight_dtype,
@@ -1239,7 +1567,7 @@ def main():
             else:
                 batch = next(iter_hypersim)
 
-            with accelerator.accumulate(unet):
+            with accelerator.accumulate(*train_models):
                 assert len(args.task_name) == 1
                 if args.task_name[0] == "depth":
                     TAR_ANNO = "depth_values"
@@ -1444,8 +1772,62 @@ def main():
                     return_tensors="pt",
                 )
                 text_input_ids = text_inputs.input_ids.to(target_latents.device)
-                encoder_hidden_states = text_encoder(text_input_ids, return_dict=False)[0]
-                encoder_hidden_states = encoder_hidden_states.repeat(bsz, 1, 1)
+                text_encoder_hidden_states = text_encoder(text_input_ids, return_dict=False)[0]
+                text_encoder_hidden_states = text_encoder_hidden_states.repeat(bsz, 1, 1)
+                encoder_hidden_states = text_encoder_hidden_states
+                encoder_attention_mask = None
+                object_features_for_bias = None
+                object_mask_for_bias = None
+                if object_attention_encoder is not None:
+                    object_class_ids = batch["object_class_ids"].to(
+                        target_latents.device
+                    )
+                    object_features = batch["object_features"].to(
+                        device=target_latents.device, dtype=weight_dtype
+                    )
+                    object_mask_anno = batch["object_mask"].to(
+                        target_latents.device
+                    )
+                    object_mask_anno = apply_object_condition_dropout(
+                        object_mask_anno,
+                        args.object_attention_dropout_p,
+                        training=True,
+                    )
+                    if use_rgb_recon:
+                        object_class_ids = torch.cat(
+                            [
+                                object_class_ids,
+                                torch.zeros_like(object_class_ids),
+                            ],
+                            dim=0,
+                        )
+                        object_features = torch.cat(
+                            [object_features, torch.zeros_like(object_features)],
+                            dim=0,
+                        )
+                        object_mask = torch.cat(
+                            [
+                                object_mask_anno,
+                                torch.zeros_like(object_mask_anno),
+                            ],
+                            dim=0,
+                        )
+                        object_features_for_bias = object_features
+                        object_mask_for_bias = object_mask
+                    else:
+                        object_mask = object_mask_anno
+                        object_features_for_bias = object_features
+                        object_mask_for_bias = object_mask
+                    (
+                        encoder_hidden_states,
+                        encoder_attention_mask,
+                    ) = encode_object_attention_condition(
+                        encoder_hidden_states,
+                        object_attention_encoder,
+                        object_class_ids,
+                        object_features,
+                        object_mask,
+                    )
 
                 # Get the target for loss
                 target = target_latents
@@ -1460,9 +1842,32 @@ def main():
                 else:
                     task_emb = task_emb_anno
 
+                cross_attention_kwargs = None
+                if (
+                    object_attention_encoder is not None
+                    and args.enable_object_spatial_bias
+                    and object_features_for_bias is not None
+                    and object_mask_for_bias is not None
+                ):
+                    cross_attention_kwargs = object_cross_attention_kwargs(
+                        object_features_for_bias,
+                        object_mask_for_bias,
+                        text_encoder_hidden_states,
+                        unet_input.shape[-2],
+                        unet_input.shape[-1],
+                        enabled=True,
+                    ) or None
+
                 # Predict
-                model_pred = unet(unet_input, timesteps, encoder_hidden_states, return_dict=False,
-                                  class_labels=task_emb)[0]
+                model_pred = unet(
+                    unet_input,
+                    timesteps,
+                    encoder_hidden_states,
+                    encoder_attention_mask=encoder_attention_mask,
+                    cross_attention_kwargs=cross_attention_kwargs,
+                    return_dict=False,
+                    class_labels=task_emb,
+                )[0]
 
                 # Compute loss
                 anno_pred = model_pred[:bsz_per_task] if use_rgb_recon else model_pred
@@ -1493,7 +1898,9 @@ def main():
                 # Backpropagate
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(unet.parameters(), args.max_grad_norm)
+                    accelerator.clip_grad_norm_(
+                        trainable_parameters, args.max_grad_norm
+                    )
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
@@ -1553,6 +1960,7 @@ def main():
                             text_encoder,
                             tokenizer,
                             unet,
+                            object_attention_encoder,
                             args,
                             accelerator,
                             weight_dtype,
@@ -1566,12 +1974,15 @@ def main():
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         unet = unwrap_model(unet)
+        if object_attention_encoder is not None:
+            object_attention_encoder = unwrap_model(object_attention_encoder)
 
         pipeline = LotusDPipeline.from_pretrained(
             args.pretrained_model_name_or_path,
             text_encoder=text_encoder,
             vae=vae,
             unet=unet,
+            object_condition_encoder=object_attention_encoder,
             revision=args.revision,
             variant=args.variant,
         )

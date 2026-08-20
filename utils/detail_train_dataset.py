@@ -15,6 +15,7 @@ from PIL import Image
 from utils.hypersim_dataset import HypersimImageDepthNormalTransform, get_hypersim_dataset_depth_normal
 from utils.object_condition import class_map_path, class_map_to_tensor
 from utils.object_detection_cache import detections_to_mask, load_detections
+from utils.object_attention_condition import ObjectAttentionCache
 
 
 def count_detections_at_thr(rgb_path: str | Path, detail_root: str | Path, score_thr: float) -> int:
@@ -129,12 +130,33 @@ class DetailTrainDataset(torch.utils.data.Dataset):
         require_detections: bool = False,
         manifest_path: Optional[str] = None,
         pre_depth_root: Optional[str | Path] = None,
+        object_attention_cache_path: Optional[str | Path] = None,
+        max_objects: int = 16,
     ):
         self.rgb_root = Path(rgb_root)
         self.detail_root = Path(detail_root)
         self.pre_depth_root = Path(pre_depth_root) if pre_depth_root is not None else self.detail_root
         self.transform = transform
         self.detection_score_thr = float(detection_score_thr)
+        self.object_attention_cache = (
+            ObjectAttentionCache.load(object_attention_cache_path)
+            if object_attention_cache_path is not None
+            else None
+        )
+        self.max_objects = int(max_objects)
+        if self.object_attention_cache is not None:
+            cache_threshold = self.object_attention_cache.metadata.get(
+                "detection_score_thr"
+            )
+            if (
+                cache_threshold is not None
+                and abs(float(cache_threshold) - self.detection_score_thr) > 1e-8
+            ):
+                raise ValueError(
+                    "Object attention cache threshold does not match "
+                    f"dataset threshold: {cache_threshold} vs "
+                    f"{self.detection_score_thr}"
+                )
 
         if manifest_path is not None:
             rgb_paths, depth_paths, _ = load_detail_train_manifest(manifest_path)
@@ -147,6 +169,18 @@ class DetailTrainDataset(torch.utils.data.Dataset):
         else:
             self.rgb_paths = list(rgb_paths)
             self.depth_paths = depth_paths or [self._guess_depth_path(p) for p in self.rgb_paths]
+
+        if self.object_attention_cache is not None:
+            pairs = [
+                (rgb, depth)
+                for rgb, depth in zip(self.rgb_paths, self.depth_paths)
+                if self.object_attention_cache.contains(rgb)
+            ]
+            if not pairs:
+                raise FileNotFoundError(
+                    "Object attention cache has no entries for this dataset."
+                )
+            self.rgb_paths, self.depth_paths = map(list, zip(*pairs))
 
         if require_artifacts:
             pairs = [
@@ -194,6 +228,42 @@ class DetailTrainDataset(torch.utils.data.Dataset):
     def __len__(self) -> int:
         return len(self.rgb_paths)
 
+    def _load_condition_maps(
+        self, rgb_path: str, target_hw: Tuple[int, int]
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        if self.object_attention_cache is not None:
+            zeros = np.zeros(target_hw, dtype=np.float32)
+            return zeros, zeros.copy(), zeros.copy(), zeros.copy(), zeros.copy()
+
+        pre_depth, valid_mask = load_pre_depth_artifacts(
+            rgb_path, self.pre_depth_root
+        )
+        if pre_depth is None or valid_mask is None:
+            raise FileNotFoundError(f"Missing pre-depth artifacts for {rgb_path}")
+
+        detections = load_detections(rgb_path, self.detail_root)
+        if self.detection_score_thr > 0:
+            detections = [
+                detection
+                for detection in detections
+                if detection.score >= self.detection_score_thr
+            ]
+            keep = detections_to_mask(
+                detections, valid_mask.shape[0], valid_mask.shape[1]
+            )
+            valid_mask = valid_mask.astype(np.float32) * keep
+
+        class_map, size_w, size_h = rasterize_class_and_size_maps(
+            detections, valid_mask.shape[0], valid_mask.shape[1]
+        )
+        if (
+            self.detection_score_thr <= 0
+            and not detections
+            and class_map_path(rgb_path, self.detail_root).is_file()
+        ):
+            class_map = np.load(class_map_path(rgb_path, self.detail_root))
+        return pre_depth, valid_mask, class_map, size_w, size_h
+
     def __getitem__(self, idx: int):
         rgb_path = self.rgb_paths[idx]
         depth_path = self.depth_paths[idx]
@@ -206,29 +276,9 @@ class DetailTrainDataset(torch.utils.data.Dataset):
 
         pixel_values, depth_values, normal_values = self.transform(image, depth, fallback_normal)
 
-        pre_depth, valid_mask = load_pre_depth_artifacts(rgb_path, self.pre_depth_root)
-        if pre_depth is None or valid_mask is None:
-            raise FileNotFoundError(f"Missing pre-depth artifacts for {rgb_path}")
-
-        # Training-time score filter: keep only high-confidence detections for
-        # valid_mask / class_map / size maps. Offline pre_depth.npy stays as-is;
-        # regions that fail the threshold are marked invalid.
-        if self.detection_score_thr > 0:
-            detections = [
-                d
-                for d in load_detections(rgb_path, self.detail_root)
-                if d.score >= self.detection_score_thr
-            ]
-            h0, w0 = valid_mask.shape[:2]
-            keep = detections_to_mask(detections, h0, w0)
-            valid_mask = (valid_mask.astype(np.float32) * keep).astype(np.float32)
-            class_map, size_w, size_h = rasterize_class_and_size_maps(detections, h0, w0)
-        else:
-            detections = load_detections(rgb_path, self.detail_root)
-            h0, w0 = valid_mask.shape[:2]
-            class_map, size_w, size_h = rasterize_class_and_size_maps(detections, h0, w0)
-            if not detections and class_map_path(rgb_path, self.detail_root).is_file():
-                class_map = np.load(class_map_path(rgb_path, self.detail_root))
+        pre_depth, valid_mask, class_map, size_w, size_h = (
+            self._load_condition_maps(rgb_path, pixel_values.shape[-2:])
+        )
 
         pre_depth_t = self._resize_map(pre_depth, pixel_values.shape[-2:])
         valid_mask_t = self._resize_map(valid_mask, pixel_values.shape[-2:])
@@ -239,7 +289,7 @@ class DetailTrainDataset(torch.utils.data.Dataset):
         size_w_norm = torch.from_numpy(size_map_to_tensor(size_w_t.numpy())).unsqueeze(0)
         size_h_norm = torch.from_numpy(size_map_to_tensor(size_h_t.numpy())).unsqueeze(0)
 
-        return {
+        output = {
             "pixel_values": pixel_values,
             "depth_values": depth_values,
             "normal_values": normal_values,
@@ -251,6 +301,18 @@ class DetailTrainDataset(torch.utils.data.Dataset):
             "image_path": rgb_path,
             "depth_path": depth_path,
         }
+        if self.object_attention_cache is not None:
+            object_class_ids, object_features, object_mask = (
+                self.object_attention_cache.padded(rgb_path, self.max_objects)
+            )
+            output.update(
+                {
+                    "object_class_ids": torch.from_numpy(object_class_ids),
+                    "object_features": torch.from_numpy(object_features),
+                    "object_mask": torch.from_numpy(object_mask),
+                }
+            )
+        return output
 
     def _resize_map(self, arr: np.ndarray, size_hw: Tuple[int, int], nearest: bool = False) -> torch.Tensor:
         t = torch.from_numpy(arr.astype(np.float32)).unsqueeze(0).unsqueeze(0)
@@ -274,6 +336,8 @@ def get_detail_train_dataset(
     require_detections: bool = False,
     manifest_path: Optional[str] = None,
     pre_depth_root: Optional[str] = None,
+    object_attention_cache_path: Optional[str] = None,
+    max_objects: int = 16,
 ):
     """Build detail-train dataset using Hypersim index when possible."""
     manifest_rgb_paths: Optional[List[str]] = None
@@ -336,11 +400,13 @@ def get_detail_train_dataset(
         transform=transform,
         rgb_paths=rgb_paths,
         depth_paths=depth_paths,
-        require_artifacts=True,
+        require_artifacts=object_attention_cache_path is None,
         detection_score_thr=detection_score_thr,
         require_detections=require_detections,
         manifest_path=manifest_path,
         pre_depth_root=pre_depth_root,
+        object_attention_cache_path=object_attention_cache_path,
+        max_objects=max_objects,
     )
 
     def preprocess_noop(examples):
@@ -355,7 +421,7 @@ def get_detail_train_dataset(
         class_map_values = torch.stack([e["class_map_values"] for e in examples])
         size_w_values = torch.stack([e["size_w_values"] for e in examples])
         size_h_values = torch.stack([e["size_h_values"] for e in examples])
-        return {
+        batch = {
             "pixel_values": pixel_values.float(),
             "depth_values": depth_values.float(),
             "normal_values": normal_values.float(),
@@ -367,5 +433,20 @@ def get_detail_train_dataset(
             "image_pathes": [e["image_path"] for e in examples],
             "depth_paths": [e["depth_path"] for e in examples],
         }
+        if "object_class_ids" in examples[0]:
+            batch.update(
+                {
+                    "object_class_ids": torch.stack(
+                        [e["object_class_ids"] for e in examples]
+                    ).long(),
+                    "object_features": torch.stack(
+                        [e["object_features"] for e in examples]
+                    ).float(),
+                    "object_mask": torch.stack(
+                        [e["object_mask"] for e in examples]
+                    ).bool(),
+                }
+            )
+        return batch
 
     return dataset, preprocess_noop, collate_fn

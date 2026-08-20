@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Single-image inference: YOLO + regressor pre-depth + Lotus detail."""
+"""Single-image inference: YOLO + regressor object attention + Lotus-D."""
 
 from __future__ import annotations
 
@@ -19,8 +19,7 @@ if str(_ROOT) not in sys.path:
 from pipeline import LotusDPipeline
 from utils.object_detection_cache import load_detections, load_yolo_model, run_yolo_detections
 from utils.object_depth_regressor import ObjectDepthRegressorBundle
-from utils.object_pre_depth import CoreDepthPredictor
-from utils.object_pre_depth_regressor import build_pre_depth_for_rgb
+from utils.object_attention_condition import padded_object_condition_from_detections
 from utils.seed_all import seed_all
 
 
@@ -30,8 +29,8 @@ def parse_args():
     p.add_argument("--detail_model", type=str, required=True)
     p.add_argument("--regressor_dir", type=str, required=True)
     p.add_argument("--detail_root", type=str, default=None, help="Optional cached detections dir")
-    p.add_argument("--core_model", type=str, default="jingheya/lotus-depth-d-v2-0-disparity")
     p.add_argument("--detection_score_thr", type=float, default=None)
+    p.add_argument("--max_objects", type=int, default=16)
     p.add_argument("--processing_res", type=int, default=None)
     p.add_argument("--output", type=str, required=True)
     p.add_argument("--half_precision", action="store_true")
@@ -71,25 +70,28 @@ def main():
             rgb_np, model=model, score_thr=detection_score_thr
         )
 
-    core_pipe = LotusDPipeline.from_pretrained(args.core_model, torch_dtype=dtype).to(device)
     detail_pipe = LotusDPipeline.from_pretrained(args.detail_model, torch_dtype=dtype).to(device)
-    if int(detail_pipe.unet.config.in_channels) != 9:
+    if int(detail_pipe.unet.config.in_channels) != 4:
         raise ValueError(
-            "Regressor pre-depth inference requires a 9ch detail model; "
+            "Object attention inference requires a 4ch detail model; "
             f"got {detail_pipe.unet.config.in_channels}."
         )
-    core_predictor = CoreDepthPredictor(
-        core_pipe, processing_res=processing_res, generator=generator
+    if detail_pipe.object_condition_encoder is None:
+        raise ValueError("detail_model has no object_condition_encoder")
+    class_ids, object_features, object_mask = (
+        padded_object_condition_from_detections(
+            detections,
+            rgb_np.shape[1],
+            rgb_np.shape[0],
+            regressor,
+            args.max_objects,
+        )
     )
-
-    pre_depth, valid, global_d = build_pre_depth_for_rgb(rgb_np, detections, regressor, core_predictor)
 
     image = torch.from_numpy(rgb_np.astype(np.float32)).permute(2, 0, 1).unsqueeze(0) / 127.5 - 1.0
     image = image.to(device)
     task_emb = torch.tensor([1, 0], device=device).float().unsqueeze(0)
     task_emb = torch.cat([torch.sin(task_emb), torch.cos(task_emb)], dim=-1)
-    pre_t = torch.from_numpy(pre_depth).unsqueeze(0).unsqueeze(0).repeat(1, 3, 1, 1).to(device=device, dtype=image.dtype)
-    valid_t = torch.from_numpy(valid).unsqueeze(0).unsqueeze(0).to(device=device, dtype=image.dtype)
 
     autocast_ctx = (
         nullcontext()
@@ -105,8 +107,9 @@ def main():
             output_type="np",
             timesteps=[999],
             task_emb=task_emb,
-            pre_depth=pre_t,
-            pre_depth_valid_mask=valid_t,
+            object_class_ids=class_ids,
+            object_features=object_features,
+            object_mask=object_mask,
             processing_res=processing_res,
             match_input_res=True,
         ).images[0]
@@ -114,9 +117,8 @@ def main():
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
     np.save(out / "pred_disp.npy", pred.mean(axis=-1))
-    np.save(out / "pre_depth.npy", pre_depth)
-    np.save(out / "valid_mask.npy", valid)
-    np.save(out / "global_disp.npy", global_d)
+    np.save(out / "object_features.npy", object_features.numpy())
+    np.save(out / "object_mask.npy", object_mask.numpy())
     Image.fromarray(rgb_np).save(out / "rgb.png")
     print(f"Saved to {out}")
 
