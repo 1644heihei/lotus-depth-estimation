@@ -17,9 +17,11 @@ from utils.object_attention_condition import (
     append_object_attention_tokens,
     apply_object_condition_dropout,
     encode_object_attention_condition,
+    object_condition_encoder_spatial_bias_enabled,
     object_rows_from_detections,
     padded_object_condition_from_detections,
     stack_object_rows,
+    validate_object_attention_cache_metadata,
 )
 from utils.object_detection_cache import ObjectDetection
 
@@ -218,6 +220,57 @@ class ObjectAttentionConditionTest(unittest.TestCase):
                 ),
                 metadata={},
             )
+
+    def test_validate_cache_metadata_regressor_mismatch(self):
+        with self.assertRaises(ValueError):
+            validate_object_attention_cache_metadata(
+                {"regressor_dir": "D:/lotus/regressor_a"},
+                regressor_dir="D:/lotus/regressor_b",
+            )
+
+    def test_roi_regressor_requires_rgb_for_online_features(self):
+        class RoiRegressor:
+            config = {"roi_feature_dim": 32}
+
+        with self.assertRaises(ValueError):
+            padded_object_condition_from_detections(
+                [self._detection()],
+                100,
+                100,
+                RoiRegressor(),
+                4,
+            )
+
+    def test_spatial_bias_flag_from_encoder_config(self):
+        enabled = ObjectAttentionEncoder(
+            class_embed_dim=8,
+            hidden_dim=16,
+            num_hidden_layers=3,
+            cross_attention_dim=32,
+            enable_object_spatial_bias=True,
+        )
+        disabled = ObjectAttentionEncoder(
+            class_embed_dim=8,
+            hidden_dim=16,
+            num_hidden_layers=3,
+            cross_attention_dim=32,
+            enable_object_spatial_bias=False,
+        )
+        legacy = ObjectAttentionEncoder(
+            class_embed_dim=8,
+            hidden_dim=16,
+            num_hidden_layers=2,
+            cross_attention_dim=32,
+            enable_object_spatial_bias=False,
+        )
+        self.assertTrue(
+            object_condition_encoder_spatial_bias_enabled(enabled)
+        )
+        self.assertFalse(
+            object_condition_encoder_spatial_bias_enabled(disabled)
+        )
+        self.assertFalse(object_condition_encoder_spatial_bias_enabled(legacy))
+        self.assertFalse(object_condition_encoder_spatial_bias_enabled(None))
 
 
 if __name__ == "__main__":

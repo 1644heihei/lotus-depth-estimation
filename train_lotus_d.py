@@ -720,6 +720,12 @@ def parse_args():
         help="Single-NPZ object attention cache for the detail training images.",
     )
     parser.add_argument(
+        "--object_attention_regressor_dir",
+        type=str,
+        default=None,
+        help="Optional regressor dir to validate against object_attention_cache metadata.",
+    )
+    parser.add_argument(
         "--object_attention_eval_cache",
         type=str,
         default=None,
@@ -1193,7 +1199,8 @@ def main():
             )
         else:
             object_attention_encoder = ObjectAttentionEncoder(
-                cross_attention_dim=int(unet.config.cross_attention_dim)
+                cross_attention_dim=int(unet.config.cross_attention_dim),
+                enable_object_spatial_bias=args.enable_object_spatial_bias,
             )
         object_attention_encoder.train()
         if args.enable_object_spatial_bias:
@@ -1318,6 +1325,7 @@ def main():
             pre_depth_root=args.pre_depth_artifacts_dir,
             object_attention_cache_path=args.object_attention_cache,
             max_objects=args.max_objects,
+            object_attention_regressor_dir=args.object_attention_regressor_dir,
         )
         train_dataset_hypersim = train_detail_dataset
         train_dataloader_hypersim = torch.utils.data.DataLoader(

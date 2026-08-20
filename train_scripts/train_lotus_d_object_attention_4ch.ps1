@@ -22,6 +22,7 @@ accelerate launch `
   --detail_train_data_dir=$YOLO_ROOT `
   --detail_train_manifest=$MANIFEST `
   --object_attention_cache=$CACHE `
+  --object_attention_regressor_dir="output/object_depth_regressor_v5_roi" `
   --object_attention_eval_cache=$EVAL_CACHE `
   --object_attention_eval_rgb_dir=$EVAL_RGB `
   --validation_min_detections=1 `

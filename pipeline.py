@@ -11,6 +11,7 @@ from utils.image_utils import resize_max_res, get_tv_resample_method, resize_bac
 from utils.pre_depth_fusion import downsample_condition_map, downsample_valid_mask, encode_pre_depth_latents
 from utils.object_attention_condition import (
     ObjectAttentionEncoder,
+    object_condition_encoder_spatial_bias_enabled,
     encode_object_attention_condition,
 )
 from utils.object_spatial_attention import (
@@ -244,7 +245,9 @@ class DirectDiffusionPipeline(
             image_encoder=image_encoder,
             object_condition_encoder=object_condition_encoder,
         )
-        self._enable_object_spatial_bias = object_condition_encoder is not None
+        self._enable_object_spatial_bias = (
+            object_condition_encoder_spatial_bias_enabled(object_condition_encoder)
+        )
         if self._enable_object_spatial_bias:
             install_object_spatial_attention_processors(unet)
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)

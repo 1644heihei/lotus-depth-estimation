@@ -29,8 +29,11 @@ from utils.object_detection_cache import detections_to_mask, load_detections
 from utils.object_pre_depth import CoreDepthPredictor, load_pre_depth_artifacts
 from utils.object_pre_depth_regressor import build_pre_depth_for_rgb
 from utils.object_attention_condition import (
+    ObjectAttentionCache,
     ObjectAttentionEncoder,
+    object_condition_encoder_spatial_bias_enabled,
     padded_object_condition_from_detections,
+    validate_object_attention_cache_metadata,
 )
 from utils.object_spatial_attention import install_object_spatial_attention_processors
 from utils.seed_all import seed_all
@@ -82,8 +85,15 @@ def parse_args():
             "unconditioned",
             "attention",
             "attention_off",
+            "attention_cached",
         ],
         default="regressor",
+    )
+    p.add_argument(
+        "--object_attention_eval_cache",
+        type=str,
+        default=None,
+        help="NPZ cache for attention_cached mode (same features as training).",
     )
     p.add_argument("--pre_depth_root", type=str, default=None)
     p.add_argument("--detection_score_thr", type=float, default=None)
@@ -272,10 +282,15 @@ def main():
             detail_pipe.object_condition_encoder = ObjectAttentionEncoder.from_pretrained(
                 ckpt_dir, subfolder="object_condition_encoder", torch_dtype=dtype
             ).to(device)
-            install_object_spatial_attention_processors(detail_pipe.unet)
         logging.info("Loaded checkpoint weights from %s", ckpt_dir)
-    elif detail_pipe.object_condition_encoder is not None:
-        install_object_spatial_attention_processors(detail_pipe.unet)
+    if detail_pipe.object_condition_encoder is not None:
+        detail_pipe._enable_object_spatial_bias = (
+            object_condition_encoder_spatial_bias_enabled(
+                detail_pipe.object_condition_encoder
+            )
+        )
+        if detail_pipe._enable_object_spatial_bias:
+            install_object_spatial_attention_processors(detail_pipe.unet)
     detail_pipe.set_progress_bar_config(disable=True)
     in_ch = int(detail_pipe.unet.config.in_channels)
     expected_channels = (
@@ -288,13 +303,41 @@ def main():
         )
 
     regressor = ObjectDepthRegressorBundle.load(args.regressor_dir, device=device)
-    if args.regressor_model_type != "config":
-        regressor.model_type = args.regressor_model_type
     detection_score_thr = (
         float(args.detection_score_thr)
         if args.detection_score_thr is not None
         else float(regressor.config.get("detection_score_thr", 0.5))
     )
+    if args.regressor_model_type != "config":
+        config_type = regressor.config.get("model_type", "mlp")
+        if args.regressor_model_type != config_type:
+            logging.warning(
+                "regressor_model_type=%s overrides config model_type=%s; "
+                "online object attention features may differ from training cache",
+                args.regressor_model_type,
+                config_type,
+            )
+        regressor.model_type = args.regressor_model_type
+    object_attention_eval_cache = None
+    if args.object_attention_eval_cache:
+        object_attention_eval_cache = ObjectAttentionCache.load(
+            args.object_attention_eval_cache
+        )
+        validate_object_attention_cache_metadata(
+            object_attention_eval_cache.metadata,
+            regressor_dir=args.regressor_dir,
+            detection_score_thr=detection_score_thr,
+            max_objects=args.max_objects,
+        )
+        logging.info(
+            "Loaded object attention eval cache: %s (regressor=%s)",
+            args.object_attention_eval_cache,
+            object_attention_eval_cache.metadata.get("regressor_dir"),
+        )
+    if args.condition_mode == "attention_cached" and object_attention_eval_cache is None:
+        raise ValueError(
+            "--condition_mode attention_cached requires --object_attention_eval_cache"
+        )
     pairs, num_skipped = filter_pairs_by_min_detections(
         pairs, detail_root, detection_score_thr, args.min_detections
     )
@@ -354,8 +397,17 @@ def main():
         elif args.condition_mode in ("attention", "attention_off"):
             if args.condition_mode == "attention":
                 object_condition = padded_object_condition_from_detections(
-                    dets, w, h, regressor, args.max_objects
+                    dets, w, h, regressor, args.max_objects, rgb_np=rgb_np
                 )
+        elif args.condition_mode == "attention_cached":
+            class_ids, features, mask = object_attention_eval_cache.padded_for_eval(
+                rgb_path, args.max_objects, rgb_root=str(rgb_dir)
+            )
+            object_condition = (
+                torch.from_numpy(class_ids).unsqueeze(0),
+                torch.from_numpy(features).unsqueeze(0),
+                torch.from_numpy(mask).unsqueeze(0),
+            )
 
         pred = predict_detail(
             detail_pipe,

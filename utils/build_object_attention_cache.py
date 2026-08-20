@@ -89,6 +89,8 @@ def main():
         "feature_dim": int(features.shape[1]),
         "regressor_dir": str(Path(args.regressor_dir)),
         "regressor_feature_version": regressor.config.get("feature_version"),
+        "regressor_model_type": regressor.config.get("model_type"),
+        "roi_feature_dim": int(regressor.config.get("roi_feature_dim", 0) or 0),
         "detection_score_thr": threshold,
         "num_images": len(paths),
         "num_objects": object_count,

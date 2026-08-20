@@ -15,7 +15,10 @@ from PIL import Image
 from utils.hypersim_dataset import HypersimImageDepthNormalTransform, get_hypersim_dataset_depth_normal
 from utils.object_condition import class_map_path, class_map_to_tensor
 from utils.object_detection_cache import detections_to_mask, load_detections
-from utils.object_attention_condition import ObjectAttentionCache
+from utils.object_attention_condition import (
+    ObjectAttentionCache,
+    validate_object_attention_cache_metadata,
+)
 
 
 def count_detections_at_thr(rgb_path: str | Path, detail_root: str | Path, score_thr: float) -> int:
@@ -132,6 +135,7 @@ class DetailTrainDataset(torch.utils.data.Dataset):
         pre_depth_root: Optional[str | Path] = None,
         object_attention_cache_path: Optional[str | Path] = None,
         max_objects: int = 16,
+        object_attention_regressor_dir: Optional[str | Path] = None,
     ):
         self.rgb_root = Path(rgb_root)
         self.detail_root = Path(detail_root)
@@ -145,17 +149,21 @@ class DetailTrainDataset(torch.utils.data.Dataset):
         )
         self.max_objects = int(max_objects)
         if self.object_attention_cache is not None:
-            cache_threshold = self.object_attention_cache.metadata.get(
-                "detection_score_thr"
+            validate_object_attention_cache_metadata(
+                self.object_attention_cache.metadata,
+                regressor_dir=object_attention_regressor_dir,
+                detection_score_thr=self.detection_score_thr,
+                max_objects=self.max_objects,
             )
-            if (
-                cache_threshold is not None
-                and abs(float(cache_threshold) - self.detection_score_thr) > 1e-8
-            ):
-                raise ValueError(
-                    "Object attention cache threshold does not match "
-                    f"dataset threshold: {cache_threshold} vs "
-                    f"{self.detection_score_thr}"
+            cache_regressor = self.object_attention_cache.metadata.get("regressor_dir")
+            if cache_regressor:
+                logger.info(
+                    "Object attention cache built with regressor_dir=%s feature_version=%s roi_feature_dim=%s",
+                    cache_regressor,
+                    self.object_attention_cache.metadata.get(
+                        "regressor_feature_version"
+                    ),
+                    self.object_attention_cache.metadata.get("roi_feature_dim", 0),
                 )
 
         if manifest_path is not None:
@@ -174,7 +182,10 @@ class DetailTrainDataset(torch.utils.data.Dataset):
             pairs = [
                 (rgb, depth)
                 for rgb, depth in zip(self.rgb_paths, self.depth_paths)
-                if self.object_attention_cache.contains(rgb)
+                if self.object_attention_cache.resolve_index(
+                    rgb, rgb_root=str(self.rgb_root)
+                )
+                is not None
             ]
             if not pairs:
                 raise FileNotFoundError(
@@ -303,7 +314,9 @@ class DetailTrainDataset(torch.utils.data.Dataset):
         }
         if self.object_attention_cache is not None:
             object_class_ids, object_features, object_mask = (
-                self.object_attention_cache.padded(rgb_path, self.max_objects)
+                self.object_attention_cache.padded_for_eval(
+                    rgb_path, self.max_objects, rgb_root=str(self.rgb_root)
+                )
             )
             output.update(
                 {
@@ -338,6 +351,7 @@ def get_detail_train_dataset(
     pre_depth_root: Optional[str] = None,
     object_attention_cache_path: Optional[str] = None,
     max_objects: int = 16,
+    object_attention_regressor_dir: Optional[str] = None,
 ):
     """Build detail-train dataset using Hypersim index when possible."""
     manifest_rgb_paths: Optional[List[str]] = None
@@ -407,6 +421,7 @@ def get_detail_train_dataset(
         pre_depth_root=pre_depth_root,
         object_attention_cache_path=object_attention_cache_path,
         max_objects=max_objects,
+        object_attention_regressor_dir=object_attention_regressor_dir,
     )
 
     def preprocess_noop(examples):

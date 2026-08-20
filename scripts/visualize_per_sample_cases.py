@@ -28,6 +28,7 @@ from pipeline import LotusDPipeline
 from utils.image_utils import colorize_depth_map
 from utils.object_attention_condition import (
     ObjectAttentionEncoder,
+    object_condition_encoder_spatial_bias_enabled,
     padded_object_condition_from_detections,
 )
 from utils.object_spatial_attention import install_object_spatial_attention_processors
@@ -152,7 +153,13 @@ def load_attention_pipe(model_dir: str, step: int, dtype, device):
             ckpt, subfolder="object_condition_encoder", torch_dtype=dtype
         ).to(device)
     if pipe.object_condition_encoder is not None:
-        install_object_spatial_attention_processors(pipe.unet)
+        pipe._enable_object_spatial_bias = (
+            object_condition_encoder_spatial_bias_enabled(
+                pipe.object_condition_encoder
+            )
+        )
+        if pipe._enable_object_spatial_bias:
+            install_object_spatial_attention_processors(pipe.unet)
     pipe.set_progress_bar_config(disable=True)
     return pipe
 
@@ -184,7 +191,7 @@ def run_case(
         rgb_np, dets, regressor, core_predictor
     )
     object_condition = padded_object_condition_from_detections(
-        dets, w, h, regressor, max_objects=16
+        dets, w, h, regressor, max_objects=16, rgb_np=rgb_np
     )
 
     official_disp = predict_detail(

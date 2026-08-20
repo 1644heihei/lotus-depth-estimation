@@ -85,6 +85,7 @@ def main():
             rgb_np.shape[0],
             regressor,
             args.max_objects,
+            rgb_np=rgb_np,
         )
     )
 

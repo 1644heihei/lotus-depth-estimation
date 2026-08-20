@@ -23,6 +23,62 @@ def normalize_image_key(path: str | Path) -> str:
     return str(path).replace("\\", "/").lower()
 
 
+def normalize_path_for_compare(path: str | Path) -> str:
+    return str(Path(path).resolve()).replace("\\", "/").lower()
+
+
+def regressor_requires_rgb(regressor) -> bool:
+    config = getattr(regressor, "config", None)
+    if not isinstance(config, dict):
+        return False
+    return int(config.get("roi_feature_dim", 0) or 0) > 0
+
+
+def validate_object_attention_cache_metadata(
+    metadata: dict,
+    *,
+    regressor_dir: str | Path | None = None,
+    detection_score_thr: float | None = None,
+    max_objects: int | None = None,
+) -> None:
+    """Ensure cache metadata matches the regressor/settings used at runtime."""
+    if regressor_dir is not None and metadata.get("regressor_dir"):
+        expected = normalize_path_for_compare(regressor_dir)
+        cached = normalize_path_for_compare(metadata["regressor_dir"])
+        if expected != cached:
+            raise ValueError(
+                "Object attention cache regressor_dir mismatch: "
+                f"cache={metadata['regressor_dir']} vs expected={regressor_dir}. "
+                "Rebuild the cache with utils/build_object_attention_cache.py."
+            )
+    if (
+        detection_score_thr is not None
+        and metadata.get("detection_score_thr") is not None
+        and abs(float(metadata["detection_score_thr"]) - detection_score_thr) > 1e-8
+    ):
+        raise ValueError(
+            "Object attention cache detection_score_thr mismatch: "
+            f"cache={metadata['detection_score_thr']} vs expected={detection_score_thr}"
+        )
+    if max_objects is not None and metadata.get("max_objects") is not None:
+        if int(metadata["max_objects"]) != int(max_objects):
+            raise ValueError(
+                "Object attention cache max_objects mismatch: "
+                f"cache={metadata['max_objects']} vs expected={max_objects}"
+            )
+
+
+def object_condition_encoder_spatial_bias_enabled(
+    encoder: "ObjectAttentionEncoder | None",
+) -> bool:
+    if encoder is None:
+        return False
+    cfg = encoder.config
+    if hasattr(cfg, "enable_object_spatial_bias"):
+        return bool(cfg.enable_object_spatial_bias)
+    return int(getattr(cfg, "num_hidden_layers", 1)) >= 3
+
+
 def pad_object_rows(
     class_rows: np.ndarray,
     feature_rows: np.ndarray,
@@ -136,6 +192,12 @@ def padded_object_condition_from_detections(
     max_objects: int,
     rgb_np: Optional[np.ndarray] = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if regressor_requires_rgb(regressor) and rgb_np is None:
+        raise ValueError(
+            "ROI regressor requires rgb_np when building online object attention "
+            "features. Pass the RGB image array or use a pre-built object "
+            "attention cache."
+        )
     class_rows, feature_rows = object_rows_from_detections(
         detections, image_width, image_height, regressor, rgb_np=rgb_np
     )
@@ -295,6 +357,7 @@ class ObjectAttentionEncoder(ModelMixin, ConfigMixin):
         hidden_dim: int = 512,
         num_hidden_layers: int = 3,
         cross_attention_dim: int = 1024,
+        enable_object_spatial_bias: bool = True,
     ):
         super().__init__()
         if num_hidden_layers < 1:
