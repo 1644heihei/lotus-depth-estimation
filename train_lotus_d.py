@@ -655,6 +655,36 @@ def parse_args():
         help="Optional separate UNet checkpoint (e.g. core model output). VAE/text encoder still load from --pretrained_model_name_or_path.",
     )
     parser.add_argument(
+        "--use_lora",
+        action="store_true",
+        help="Freeze the UNet backbone and train only LoRA adapters (peft) instead of full fine-tuning.",
+    )
+    parser.add_argument("--lora_rank", type=int, default=8, help="LoRA adapter rank.")
+    parser.add_argument("--lora_alpha", type=int, default=16, help="LoRA adapter alpha.")
+    parser.add_argument("--lora_dropout", type=float, default=0.0, help="LoRA adapter dropout.")
+    parser.add_argument(
+        "--object_bbox_detections_root",
+        type=str,
+        default=None,
+        help=(
+            "Root dir of precomputed YOLO detection JSONs (utils/object_detection_cache.py format). "
+            "When set, adds an auxiliary loss term that upweights the existing GT reconstruction loss "
+            "inside detected object bounding boxes. Does not use the object depth regressor."
+        ),
+    )
+    parser.add_argument(
+        "--object_bbox_score_thr",
+        type=float,
+        default=0.5,
+        help="Minimum detection score to include a box in the object-region loss mask.",
+    )
+    parser.add_argument(
+        "--object_bbox_loss_weight",
+        type=float,
+        default=1.0,
+        help="Weight of the additional object-region masked MSE loss term.",
+    )
+    parser.add_argument(
         "--detail_train_data_dir",
         type=str,
         default=None,
@@ -1179,6 +1209,10 @@ def main():
                 raise ValueError(
                     "--validation_detections_root requires --object_attention_eval_rgb_dir."
                 )
+    if args.object_bbox_detections_root and args.random_flip:
+        raise ValueError(
+            "Object bbox detection coordinates are incompatible with --random_flip."
+        )
     if args.enable_pre_depth_fusion:
         # 9ch:  RGB(4)+pre(4)+valid(1)                         extra=5
         # 13ch: + class_map VAE(4)                              extra=9
@@ -1212,6 +1246,27 @@ def main():
     text_encoder.requires_grad_(False)
     unet.train()
 
+    if args.use_lora:
+        unet.requires_grad_(False)
+        from peft import LoraConfig
+
+        lora_config = LoraConfig(
+            r=args.lora_rank,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            target_modules=["to_q", "to_k", "to_v", "to_out.0"],
+        )
+        unet.add_adapter(lora_config)
+        # Keep LoRA params in fp32 for stable mixed-precision training; base weights stay frozen.
+        for p in unet.parameters():
+            if p.requires_grad:
+                p.data = p.data.float()
+        logger.info(
+            "LoRA enabled: rank=%d alpha=%d, backbone frozen.",
+            args.lora_rank,
+            args.lora_alpha,
+        )
+
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
             import xformers
@@ -1236,6 +1291,8 @@ def main():
                         unwrapped.save_pretrained(
                             os.path.join(output_dir, "object_condition_encoder")
                         )
+                    elif args.use_lora and isinstance(unwrapped, UNet2DConditionModel):
+                        unwrapped.save_lora_adapter(os.path.join(output_dir, "unet_lora"))
                     else:
                         unwrapped.save_pretrained(os.path.join(output_dir, "unet"))
                     weights.pop()
@@ -1248,13 +1305,30 @@ def main():
                     load_model = ObjectAttentionEncoder.from_pretrained(
                         input_dir, subfolder="object_condition_encoder"
                     )
+                    unwrapped.register_to_config(**load_model.config)
+                    unwrapped.load_state_dict(load_model.state_dict())
+                    del load_model
+                elif args.use_lora and isinstance(unwrapped, UNet2DConditionModel):
+                    # `unwrapped` already has the "default" LoRA adapter injected (from
+                    # unet.add_adapter at setup time), so load into it directly rather than
+                    # via load_lora_adapter, which always creates a NEW adapter (e.g.
+                    # "default_1") stacked on top -- silently orphaning the tracked optimizer
+                    # params and corrupting any later save.
+                    import safetensors.torch as st
+                    from peft import set_peft_model_state_dict
+
+                    lora_path = os.path.join(
+                        input_dir, "unet_lora", "pytorch_lora_weights.safetensors"
+                    )
+                    state_dict = st.load_file(lora_path)
+                    set_peft_model_state_dict(unwrapped, state_dict, adapter_name="default")
                 else:
                     load_model = UNet2DConditionModel.from_pretrained(
                         input_dir, subfolder="unet"
                     )
-                unwrapped.register_to_config(**load_model.config)
-                unwrapped.load_state_dict(load_model.state_dict())
-                del load_model
+                    unwrapped.register_to_config(**load_model.config)
+                    unwrapped.load_state_dict(load_model.state_dict())
+                    del load_model
 
         accelerator.register_save_state_pre_hook(save_model_hook)
         accelerator.register_load_state_pre_hook(load_model_hook)
@@ -1285,7 +1359,7 @@ def main():
     else:
         optimizer_cls = torch.optim.AdamW
 
-    unet_parameters = list(unet.parameters())
+    unet_parameters = [p for p in unet.parameters() if p.requires_grad]
     trainable_parameters = list(unet_parameters)
     parameter_groups = [{"params": unet_parameters, "lr": args.learning_rate}]
     if object_attention_encoder is not None:
@@ -1620,6 +1694,37 @@ def main():
                 if use_rgb_recon:
                     valid_mask_down_rgb = torch.ones_like(target_latents[bsz_per_task:]).to(target_latents.device).bool()
 
+                # Object-region GT-reweighted loss mask (approach: freeze backbone + LoRA,
+                # upweight existing GT loss inside YOLO-detected boxes; no regressor involved).
+                object_bbox_mask_down = None
+                if args.object_bbox_detections_root:
+                    from utils.object_detection_cache import detections_to_mask, load_detections
+
+                    masks = []
+                    for path in batch["image_pathes"][:bsz_per_task]:
+                        dets = [
+                            d
+                            for d in load_detections(path, args.object_bbox_detections_root)
+                            if d.score >= args.object_bbox_score_thr
+                        ]
+                        with Image.open(path) as im:
+                            img_w, img_h = im.size
+                        masks.append(
+                            torch.from_numpy(detections_to_mask(dets, img_h, img_w))
+                        )
+                    pixel_mask = torch.stack(masks).unsqueeze(1).float()
+                    # Downsample directly to target_latents' actual spatial shape (VAE conv
+                    # arithmetic can be off-by-one from a naive //8, e.g. 682px -> 86 not 85).
+                    object_bbox_mask_down = (
+                        F.interpolate(
+                            pixel_mask,
+                            size=target_latents.shape[-2:],
+                            mode="nearest",
+                        )
+                        > 0.5
+                    ).to(target_latents.device)
+                    object_bbox_mask_down = object_bbox_mask_down.repeat(1, 4, 1, 1)
+
                 # Set timestep
                 timesteps = torch.tensor([args.timestep], device=target_latents.device).repeat(bsz)
                 timesteps = timesteps.long()
@@ -1892,7 +1997,21 @@ def main():
                         anno_tgt.float(),
                         valid_mask_down_anno.float(),
                     )
-                loss = anno_loss + rgb_loss + args.grad_loss_weight * grad_loss
+                bbox_loss = model_pred.new_tensor(0.0)
+                if object_bbox_mask_down is not None:
+                    bbox_region = valid_mask_down_anno & object_bbox_mask_down
+                    if bbox_region.any():
+                        bbox_loss = F.mse_loss(
+                            anno_pred[bbox_region].float(),
+                            anno_tgt[bbox_region].float(),
+                            reduction="mean",
+                        )
+                loss = (
+                    anno_loss
+                    + rgb_loss
+                    + args.grad_loss_weight * grad_loss
+                    + args.object_bbox_loss_weight * bbox_loss
+                )
 
                 # Gather loss
                 avg_anno_loss = accelerator.gather(anno_loss.repeat(args.train_batch_size)).mean()
@@ -1901,7 +2020,14 @@ def main():
                 log_rgb_loss += avg_rgb_loss.item() / args.gradient_accumulation_steps
                 avg_grad_loss = accelerator.gather(grad_loss.repeat(args.train_batch_size)).mean()
                 log_grad_loss = avg_grad_loss.item() / args.gradient_accumulation_steps
-                train_loss = log_ann_loss + log_rgb_loss + args.grad_loss_weight * log_grad_loss
+                avg_bbox_loss = accelerator.gather(bbox_loss.repeat(args.train_batch_size)).mean()
+                log_bbox_loss = avg_bbox_loss.item() / args.gradient_accumulation_steps
+                train_loss = (
+                    log_ann_loss
+                    + log_rgb_loss
+                    + args.grad_loss_weight * log_grad_loss
+                    + args.object_bbox_loss_weight * log_bbox_loss
+                )
 
                 # Backpropagate
                 accelerator.backward(loss)
@@ -1913,10 +2039,11 @@ def main():
                 lr_scheduler.step()
                 optimizer.zero_grad()
 
-            logs = {"SL": loss.detach().item(), 
-                    "SL_A": anno_loss.detach().item(), 
-                    "SL_R": rgb_loss.detach().item(), 
+            logs = {"SL": loss.detach().item(),
+                    "SL_A": anno_loss.detach().item(),
+                    "SL_R": rgb_loss.detach().item(),
                     "SL_G": grad_loss.detach().item(),
+                    "SL_B": bbox_loss.detach().item(),
                     "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
             
@@ -1927,7 +2054,8 @@ def main():
                 accelerator.log({"train_loss": train_loss,
                                 "anno_loss": log_ann_loss,
                                 "rgb_loss": log_rgb_loss,
-                                "grad_loss": log_grad_loss},
+                                "grad_loss": log_grad_loss,
+                                "bbox_loss": log_bbox_loss},
                                  step=global_step)
                 train_loss = 0.0
                 log_ann_loss = 0.0
@@ -1984,6 +2112,15 @@ def main():
         unet = unwrap_model(unet)
         if object_attention_encoder is not None:
             object_attention_encoder = unwrap_model(object_attention_encoder)
+
+        if args.use_lora:
+            # Save the adapter first (small artifact), then unload it in-place so the
+            # `unet/` subfolder written by pipeline.save_pretrained below is a plain,
+            # unmodified UNet2DConditionModel -- loadable via plain from_pretrained with
+            # no LoRA-aware code, matching official Lotus exactly (base weights are
+            # untouched since the backbone was frozen for the whole run).
+            unet.save_lora_adapter(os.path.join(args.output_dir, "unet_lora"))
+            unet.unload_lora()
 
         pipeline = LotusDPipeline.from_pretrained(
             args.pretrained_model_name_or_path,

@@ -10,3 +10,5 @@ data/
 datasets/eval/depth/nyuv2/
 yolov8n-seg.pt
 
+
+.claude/settings.local.json

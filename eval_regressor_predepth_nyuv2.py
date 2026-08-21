@@ -48,6 +48,12 @@ def parse_args():
         default=None,
         help="Load UNet/object encoder weights from {detail_model}/checkpoint-{step}.",
     )
+    p.add_argument(
+        "--lora_checkpoint",
+        type=str,
+        default=None,
+        help="Path to a unet_lora/ adapter directory to apply on top of --detail_model's base unet.",
+    )
     p.add_argument("--regressor_dir", type=str, required=True)
     p.add_argument(
         "--regressor_model_type",
@@ -273,9 +279,18 @@ def main():
         ckpt_dir = Path(args.detail_model) / f"checkpoint-{args.checkpoint_step}"
         if not ckpt_dir.is_dir():
             raise FileNotFoundError(f"Checkpoint not found: {ckpt_dir}")
-        detail_pipe.unet = UNet2DConditionModel.from_pretrained(
-            ckpt_dir, subfolder="unet", torch_dtype=dtype
-        ).to(device)
+        lora_dir = ckpt_dir / "unet_lora"
+        if lora_dir.is_dir():
+            detail_pipe.unet.load_lora_adapter(
+                str(lora_dir),
+                weight_name="pytorch_lora_weights.safetensors",
+                prefix=None,
+            )
+            logging.info("Loaded LoRA adapter from %s", lora_dir)
+        else:
+            detail_pipe.unet = UNet2DConditionModel.from_pretrained(
+                ckpt_dir, subfolder="unet", torch_dtype=dtype
+            ).to(device)
         if detail_pipe.object_condition_encoder is not None and (
             ckpt_dir / "object_condition_encoder"
         ).is_dir():
@@ -283,6 +298,13 @@ def main():
                 ckpt_dir, subfolder="object_condition_encoder", torch_dtype=dtype
             ).to(device)
         logging.info("Loaded checkpoint weights from %s", ckpt_dir)
+    if args.lora_checkpoint:
+        detail_pipe.unet.load_lora_adapter(
+            args.lora_checkpoint,
+            weight_name="pytorch_lora_weights.safetensors",
+            prefix=None,
+        )
+        logging.info("Loaded LoRA adapter from %s", args.lora_checkpoint)
     if detail_pipe.object_condition_encoder is not None:
         detail_pipe._enable_object_spatial_bias = (
             object_condition_encoder_spatial_bias_enabled(
@@ -370,6 +392,7 @@ def main():
 
     rows = []
     roi_absrels = []
+    bg_absrels = []
     for rgb_path, depth_path in tqdm(pairs, desc="nyuv2_regressor_predepth"):
         rgb_np = np.array(Image.open(rgb_path).convert("RGB"))
         gt = np.array(Image.open(depth_path)).astype(np.float64) / 1000.0
@@ -452,6 +475,24 @@ def main():
                     vm_t = torch.from_numpy(gt_valid)
                     roi_absrels.append(float(abs_relative_difference(pred_t, gt_t, vm_t)))
 
+            vm_bg = spatial_mask & (roi_mask <= 0.5)
+            gt_valid_bg = np.isfinite(gt) & (gt > 1e-3) & (gt < 10.0) & vm_bg
+            if gt_valid_bg.sum() > 100:
+                gt_disp_bg, gt_nn_bg = depth2disparity(depth=gt, return_mask=True)
+                valid_nn_bg = gt_valid_bg & gt_nn_bg & (pred > 0)
+                if valid_nn_bg.sum() > 100:
+                    disp_aligned_bg, _, _ = align_depth_least_square(
+                        gt_arr=gt_disp_bg,
+                        pred_arr=pred.astype(np.float64),
+                        valid_mask_arr=valid_nn_bg,
+                        return_scale_shift=True,
+                    )
+                    depth_pred_bg = np.clip(disparity2depth(np.clip(disp_aligned_bg, 1e-3, None)), 1e-3, 10.0)
+                    pred_bg_t = torch.from_numpy(depth_pred_bg)
+                    gt_bg_t = torch.from_numpy(gt)
+                    vm_bg_t = torch.from_numpy(gt_valid_bg)
+                    bg_absrels.append(float(abs_relative_difference(pred_bg_t, gt_bg_t, vm_bg_t)))
+
     if not rows:
         raise RuntimeError("No scored images.")
 
@@ -491,6 +532,7 @@ def main():
         "abs_rel": mean_absrel,
         "delta1": mean_d1,
         "roi_abs_rel": float(np.mean(roi_absrels)) if roi_absrels else None,
+        "bg_abs_rel": float(np.mean(bg_absrels)) if bg_absrels else None,
         "object_count_metrics": object_count_metrics,
     }
 
@@ -514,6 +556,7 @@ def main():
         f"abs_rel={mean_absrel:.6f}\n"
         f"delta1={mean_d1:.6f}\n"
         f"roi_abs_rel={summary['roi_abs_rel']}\n"
+        f"bg_abs_rel={summary['bg_abs_rel']}\n"
     )
     (out_dir / "eval_metrics-least_square_disparity.txt").write_text(txt, encoding="utf-8")
     logging.info("Summary: %s", summary)
