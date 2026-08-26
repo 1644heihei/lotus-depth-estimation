@@ -62,7 +62,9 @@ def parse_args():
     p.add_argument("--checkpoint_step", type=int, default=6500)
     p.add_argument("--output_dir", default="output/eval-object-attention-8k-6500/visualizations")
     p.add_argument("--top_k", type=int, default=5)
-    p.add_argument("--processing_res", type=int, default=512)
+    # 768 is Lotus's official default; the historical experiment series ran at 512 by
+    # mistake (see docs/phase0_findings.md 3.3.1).
+    p.add_argument("--processing_res", type=int, default=768)
     p.add_argument("--half_precision", action="store_true", default=True)
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()

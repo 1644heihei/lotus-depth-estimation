@@ -4,6 +4,26 @@
 
 本ドキュメントは、object attention conditioning（4ch Lotus-D + regressor 特徴量）の学習・評価結果を整理したものです。設計レビューは [`object_attention_review.md`](object_attention_review.md) を参照してください。
 
+> [!WARNING]
+> **本ドキュメントの数値は 2 種類の異なる推論解像度が混在している。**
+>
+> | 節 | 経路 | processing_res |
+> |----|------|----------------|
+> | §3 8k 本番評価（522枚） | `eval_regressor_predepth_nyuv2.py`（ps1 が `--processing_res=512` を明示） | **512** |
+> | §4 12k 学習中 validation（654枚） | `train_lotus_d.py::run_evaluation` → `pipe()` に未指定 → パイプライン既定 | **768** |
+>
+> §3 の 512 は公式 Lotus のデフォルト（768）ではなく、regressor の ROI 抽出解像度が
+> 評価スクリプトに流用された設定ミス（[`phase0_findings.md`](phase0_findings.md) §3.3.1）。
+> 同一プロトコルの公式 Lotus は **512 で 0.05543 / 768 で 0.05000**（−9.8%）。
+>
+> したがって **§3 と §4 の数値は「評価母集団が違う」だけでなく「推論解像度も違う」**。
+> 本文中の「母集団が異なるため直接比較しないこと」という注意書きは、
+> **交絡要因が 2 つあった**と読み替えること。
+>
+> §3 の 8k 本番評価は公式 Lotus に不利な 512 で行われていたため、
+> 「fine-tune が公式より +0.008 悪化」という差は**実際にはさらに大きい**。
+> 評価スクリプトは 768 に修正済み。
+
 ---
 
 ## 1. 背景と実施した改善

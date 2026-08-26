@@ -375,10 +375,16 @@ def main():
         raise RuntimeError(
             f"No images remain after --min_detections={args.min_detections}."
         )
+    # NOTE: this used to fall back to regressor.config["processing_res"], but that value is
+    # the regressor's ROI-crop resize resolution and has nothing to do with the diffusion
+    # pipeline's inference resolution. Inheriting it silently ran every experiment at 512
+    # instead of Lotus's official default of 768, handicapping the baseline by ~9.8% abs_rel.
+    # See docs/phase0_findings.md 3.3.1. processing_res here only feeds diffusion passes
+    # (predict_detail / CoreDepthPredictor); the regressor and ROI paths do not use it.
     processing_res = (
         args.processing_res
         if args.processing_res is not None
-        else regressor.config.get("processing_res")
+        else detail_pipe.default_processing_resolution
     )
     core_predictor = None
     if args.condition_mode == "regressor":
@@ -529,6 +535,12 @@ def main():
         "num_images_skipped": num_skipped,
         "num_images": len(rows),
         "dataset": args.dataset,
+        # Record the RESOLVED value, not args.processing_res: runs that rely on the default
+        # would otherwise leave no trace of what resolution produced the numbers, which is
+        # how the 512-vs-768 misconfiguration went unnoticed (docs/phase0_findings.md 3.3.1).
+        "processing_res": processing_res,
+        "seed": args.seed,
+        "half_precision": bool(args.half_precision),
         "abs_rel": mean_absrel,
         "delta1": mean_d1,
         "roi_abs_rel": float(np.mean(roi_absrels)) if roi_absrels else None,

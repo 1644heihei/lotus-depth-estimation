@@ -1,4 +1,10 @@
 $ErrorActionPreference = "Stop"
+
+# NOTE: processing_res was 512 in the original runs - a misconfiguration inherited from
+# the regressor config (see docs/phase0_findings.md 3.3.1). 768 is Lotus's official
+# default. Recorded results in docs/ were produced at 512; re-running now gives
+# different (better) numbers. Set $PROCESSING_RES=512 to reproduce the historical run.
+$PROCESSING_RES = 768
 Set-Location "D:/lotus/lotus-depth-estimation"
 
 $REGRESSOR = "output/object_depth_regressor_v4_mask"
@@ -17,7 +23,7 @@ function Run-Eval {
       --rgb_dir=$RGB `
       --condition_mode=$Mode `
       --max_objects=16 `
-      --processing_res=512 `
+      --processing_res=$PROCESSING_RES `
       --half_precision `
       --min_detections=1 `
       --output_dir=$Output

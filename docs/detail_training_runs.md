@@ -17,6 +17,10 @@
   - 起動例: `powershell -File train_scripts/train_lotus_d_detail.ps1`  
   - 実体は `accelerate launch ... train_lotus_d.py ...`
 - **注意**: 学習中の NYUv2 中間評価は当時 **条件なし（ゼロ埋め）**。スコアは「条件あり精緻化」ではなくモニタ用。
+- **注意（2026-08-27 追記）**: 本ドキュメントの mid-eval 値は `train_lotus_d.py` 経由のため
+  **`processing_res=768`**（パイプライン既定）。一方 `eval_regressor_predepth_nyuv2.py` を
+  使った本番評価系のドキュメントは **512**（設定ミス）で、両者は直接比較できない。
+  詳細は [`phase0_findings.md`](phase0_findings.md) §3.3.1。
 
 ---
 

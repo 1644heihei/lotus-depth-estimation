@@ -1,5 +1,11 @@
 $ErrorActionPreference = "Stop"
 
+# NOTE: processing_res was 512 in the original runs - a misconfiguration inherited from
+# the regressor config (see docs/phase0_findings.md 3.3.1). 768 is Lotus's official
+# default. Recorded results in docs/ were produced at 512; re-running now gives
+# different (better) numbers. Set $PROCESSING_RES=512 to reproduce the historical run.
+$PROCESSING_RES = 768
+
 # In/out-of-bbox abs_rel split for the surviving checkpoints of the first
 # object_bbox_loss LoRA run (checkpoint-500..3000 were pruned by
 # checkpoints_total_limit=10 during training).
@@ -24,7 +30,7 @@ foreach ($step in $STEPS) {
     --detail_artifacts_dir=$ARTIFACTS `
     --condition_mode=unconditioned `
     --detection_score_thr=0.5 `
-    --processing_res=512 `
+    --processing_res=$PROCESSING_RES `
     --seed=42 `
     --half_precision `
     --output_dir="$OUT_ROOT/checkpoint-$step"

@@ -252,7 +252,13 @@ def main():
         "split_seed": args.seed,
         "val_ratio": args.val_ratio,
         "split_level": args.split_level,
-        "processing_res": 512,
+        # Resolution the RGB is resized to before ROI crops are cut for this regressor's
+        # features. This is NOT the Lotus diffusion pipeline's inference resolution - they
+        # are unrelated settings. eval_regressor_predepth_nyuv2.py used to fall back to this
+        # value for the pipeline, which silently ran every experiment at 512 instead of
+        # Lotus's official default of 768. See docs/phase0_findings.md 3.3.1.
+        "roi_processing_res": 512,
+        "processing_res": 512,  # deprecated alias, kept so existing configs still load
         "precision": "float32",
         "record_schema_version": OBJECT_RECORD_SCHEMA_VERSION,
         "roi_feature_dim": roi_feat_dim,

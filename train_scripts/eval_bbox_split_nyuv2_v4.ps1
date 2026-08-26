@@ -6,13 +6,12 @@ $ErrorActionPreference = "Stop"
 # different (better) numbers. Set $PROCESSING_RES=512 to reproduce the historical run.
 $PROCESSING_RES = 768
 
-# In/out-of-bbox abs_rel split across the fine-grained v2 retrain
-# (train_lotus_d_object_bbox_loss_v2.ps1), which keeps every 250-step
-# checkpoint from 250..3000.
-$DETAIL_MODEL = "output/train-lotus-d-object-bbox-lora-v2"
+# In/out-of-bbox abs_rel split across the v4 retrain (lower peak LR experiment,
+# train_lotus_d_object_bbox_loss_v4.ps1). Same checkpoint grid as v2/v3 for direct comparison.
+$DETAIL_MODEL = "output/train-lotus-d-object-bbox-lora-v4"
 $REGRESSOR = "output/object_depth_regressor_v5_roi"
 $ARTIFACTS = "D:/lotus/data/nyuv2_detail_artifacts/test"
-$OUT_ROOT = "output/eval_bbox_split_object_bbox_lora_v2"
+$OUT_ROOT = "output/eval_bbox_split_object_bbox_lora_v4"
 
 $STEPS = 250, 500, 750, 1000, 1250, 1500, 1750, 2000, 2250, 2500, 2750, 3000
 

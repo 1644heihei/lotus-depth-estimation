@@ -1,7 +1,26 @@
 # Object Attention 状況整理
 
-更新: 2026-08-20  
+更新: 2026-08-27  
 ブランチ: `feature/object-depth-regressor`（最新: `687eca1`）
+
+> [!WARNING]
+> **本ドキュメントの数値は 2 種類の推論解像度が混在している。**
+>
+> - **validation（654枚, 学習ループ内）** → `train_lotus_d.py` が `pipe()` に
+>   `processing_res` を渡さないため、パイプライン既定の **768**
+> - **本番 eval（522枚）** → `eval_regressor_predepth_nyuv2.py` を ps1 が
+>   `--processing_res=512` で呼んでいたため **512**
+>
+> 512 は公式 Lotus のデフォルト（768）ではなく、regressor の ROI 抽出解像度が
+> 評価スクリプトに流用された設定ミス（[`phase0_findings.md`](phase0_findings.md) §3.3.1）。
+> 同一プロトコルの公式 Lotus は **512 で 0.05543 / 768 で 0.05000**。
+>
+> よって「本番 eval」表の公式 Lotus 0.0554 も **512 での値**であり、
+> 公式本来の性能は 0.0500。**fine-tune 各版との差は記載より大きい。**
+> 評価スクリプトは 768 に修正済み。
+>
+> 併せて、本手法の方向性そのものが Phase 0 で否定されている
+> （物体は誤差の集中点ではない）。[`lotus_improvement_plan.md`](lotus_improvement_plan.md) を参照。
 
 ---
 
