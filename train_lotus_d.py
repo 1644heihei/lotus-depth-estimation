@@ -663,6 +663,18 @@ def parse_args():
     parser.add_argument("--lora_alpha", type=int, default=16, help="LoRA adapter alpha.")
     parser.add_argument("--lora_dropout", type=float, default=0.0, help="LoRA adapter dropout.")
     parser.add_argument(
+        "--lora_target_blocks",
+        type=str,
+        default="all",
+        choices=["all", "global", "local", "mid"],
+        help=(
+            "Which UNet depths receive LoRA. The error decomposition says most error is "
+            "global/low-frequency, and UNet depth corresponds to spatial scale, so this "
+            "tests whether adapting a given depth moves the matching error component. "
+            "global = mid_block + 24x24 blocks; local = the 96x96 blocks; mid = bottleneck only."
+        ),
+    )
+    parser.add_argument(
         "--object_bbox_detections_root",
         type=str,
         default=None,
@@ -1250,13 +1262,34 @@ def main():
         unet.requires_grad_(False)
         from peft import LoraConfig
 
+        # UNet depth maps to spatial scale: mid_block runs at the coarsest latent
+        # resolution and down_blocks.0 / up_blocks.3 at the finest. Restricting LoRA to a
+        # depth band tests whether adaptation there moves the corresponding error
+        # component (docs/global_error_findings.md).
+        proj = r"(to_q|to_k|to_v|to_out\.0)"
+        block_regex = {
+            "all": rf".*\.{proj}$",
+            "global": rf".*(mid_block|down_blocks\.2|up_blocks\.1).*\.{proj}$",
+            "local": rf".*(down_blocks\.0|up_blocks\.3).*\.{proj}$",
+            "mid": rf".*mid_block.*\.{proj}$",
+        }[args.lora_target_blocks]
+
         lora_config = LoraConfig(
             r=args.lora_rank,
             lora_alpha=args.lora_alpha,
             lora_dropout=args.lora_dropout,
-            target_modules=["to_q", "to_k", "to_v", "to_out.0"],
+            target_modules=block_regex,
         )
         unet.add_adapter(lora_config)
+        n_lora = sum(p.numel() for p in unet.parameters() if p.requires_grad)
+        logger.info(
+            "LoRA blocks=%s  trainable params=%.2fM", args.lora_target_blocks, n_lora / 1e6
+        )
+        if n_lora == 0:
+            raise ValueError(
+                f"--lora_target_blocks={args.lora_target_blocks} matched no modules "
+                f"(regex: {block_regex})."
+            )
         # Keep LoRA params in fp32 for stable mixed-precision training; base weights stay frozen.
         for p in unet.parameters():
             if p.requires_grad:
