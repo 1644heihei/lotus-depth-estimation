@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>深度推定研究 方針相談メモ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@500;700&family=Noto+Sans+JP:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+</head>
+<body>
+<style>
+:root{
+  --paper:#F4F6F8; --surface:#FFFFFF; --surface-2:#E9EEF2;
+  --ink:#16202B; --ink-2:#48596B; --ink-3:#74879A;
+  --rule:#DCE3EA; --rule-2:#C3CFDA;
+  --accent:#2C5F8A; --accent-ink:#1E4A6E; --accent-soft:#E2EBF3;
+  --ok:#1F7A4D; --ok-soft:#E2F1E9;
+  --block:#A32F2F; --block-soft:#F7E6E6;
+  --warn:#A96C10; --warn-soft:#F9EFDF;
+  --shadow:0 1px 2px rgba(22,32,43,.05), 0 10px 28px -18px rgba(22,32,43,.3);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#0C1218; --surface:#141D26; --surface-2:#1B2732;
+    --ink:#E8EEF4; --ink-2:#A9BAC9; --ink-3:#7C8FA0;
+    --rule:#243342; --rule-2:#314456;
+    --accent:#5FA3D8; --accent-ink:#8CC2EC; --accent-soft:#12293C;
+    --ok:#4CC489; --ok-soft:#0F2C20;
+    --block:#E3706E; --block-soft:#32191A;
+    --warn:#E0A44A; --warn-soft:#33260F;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 28px -18px rgba(0,0,0,.85);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0C1218; --surface:#141D26; --surface-2:#1B2732;
+  --ink:#E8EEF4; --ink-2:#A9BAC9; --ink-3:#7C8FA0;
+  --rule:#243342; --rule-2:#314456;
+  --accent:#5FA3D8; --accent-ink:#8CC2EC; --accent-soft:#12293C;
+  --ok:#4CC489; --ok-soft:#0F2C20;
+  --block:#E3706E; --block-soft:#32191A;
+  --warn:#E0A44A; --warn-soft:#33260F;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 10px 28px -18px rgba(0,0,0,.85);
+}
+
+*{box-sizing:border-box;}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font-family:"Noto Sans JP",system-ui,-apple-system,"Hiragino Kaku Gothic ProN",sans-serif;
+  font-size:16px; line-height:1.85; -webkit-font-smoothing:antialiased;
+}
+.mono{font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;}
+.wrap{max-width:830px; margin:0 auto; padding:0 24px 90px;}
+
+header{padding:58px 0 26px; border-bottom:3px solid var(--ink);}
+.eyebrow{
+  font-size:.72rem; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--accent-ink); font-weight:700; margin:0 0 12px;
+}
+h1{
+  font-family:"Noto Serif JP",Georgia,serif; font-weight:700;
+  font-size:clamp(1.75rem,1.3rem + 2vw,2.5rem); line-height:1.3;
+  margin:0 0 14px; text-wrap:balance;
+}
+.meta{display:flex; flex-wrap:wrap; gap:6px 20px; font-size:.8rem; color:var(--ink-3);}
+.meta b{color:var(--ink-2); font-weight:500;}
+
+.lede{
+  margin:26px 0 0; padding:20px 22px; background:var(--surface);
+  border:1px solid var(--rule); border-left:4px solid var(--accent);
+  border-radius:3px; box-shadow:var(--shadow);
+}
+.lede .t{
+  font-size:.72rem; letter-spacing:.13em; text-transform:uppercase;
+  font-weight:700; color:var(--accent-ink); margin:0 0 8px;
+}
+.lede p{margin:0 0 10px; font-size:1.02rem;}
+.lede p:last-child{margin-bottom:0;}
+
+section{padding-top:44px;}
+h2{
+  font-family:"Noto Serif JP",Georgia,serif; font-weight:700;
+  font-size:clamp(1.25rem,1.1rem + .7vw,1.55rem); line-height:1.4;
+  margin:0 0 4px; text-wrap:balance;
+}
+h2 .n{
+  font-family:"JetBrains Mono",monospace; font-size:.64em; font-weight:600;
+  color:var(--accent); margin-right:.6em;
+}
+.hr{height:1px; background:var(--rule-2); margin:14px 0 22px;}
+h3{font-weight:700; font-size:1.02rem; margin:28px 0 8px;}
+p{margin:0 0 14px;}
+ul{margin:0 0 14px; padding-left:1.25em;} li{margin-bottom:6px;}
+li::marker{color:var(--ink-3);}
+strong{font-weight:700;}
+code{
+  font-family:"JetBrains Mono",monospace; font-size:.86em;
+  background:var(--surface-2); padding:1px 5px; border-radius:2px; color:var(--ink-2);
+}
+a{color:var(--accent-ink);}
+
+/* status badge - encodes each finding's actual standing */
+.badge{
+  display:inline-block; font-size:.7rem; font-weight:700; letter-spacing:.06em;
+  padding:2px 9px; border-radius:2px; white-space:nowrap; vertical-align:2px;
+}
+.b-ok{background:var(--ok-soft); color:var(--ok);}
+.b-block{background:var(--block-soft); color:var(--block);}
+.b-warn{background:var(--warn-soft); color:var(--warn);}
+
+.tw{overflow-x:auto; margin:16px 0 22px; border:1px solid var(--rule); border-radius:3px; background:var(--surface);}
+table{border-collapse:collapse; width:100%; font-size:.88rem; min-width:440px;}
+th,td{padding:9px 14px; text-align:left; border-bottom:1px solid var(--rule); vertical-align:top;}
+thead th{
+  font-size:.71rem; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-3);
+  font-weight:700; background:var(--surface-2); border-bottom:1px solid var(--rule-2); white-space:nowrap;
+}
+tbody tr:last-child td{border-bottom:none;}
+td.n,th.n{text-align:right; font-family:"JetBrains Mono",monospace; font-variant-numeric:tabular-nums; white-space:nowrap;}
+tr.hi td{background:var(--accent-soft);}
+.big{color:var(--ok); font-weight:700;}
+.small{color:var(--block); font-weight:700;}
+
+.call{margin:20px 0; padding:16px 20px; border-radius:3px; border-left:3px solid var(--accent); background:var(--accent-soft); font-size:.94rem;}
+.call p:last-child{margin-bottom:0;}
+.call .t{font-size:.71rem; letter-spacing:.12em; text-transform:uppercase; font-weight:700; color:var(--accent-ink); margin:0 0 7px;}
+.call.block{border-left-color:var(--block); background:var(--block-soft);} .call.block .t{color:var(--block);}
+.call.warn{border-left-color:var(--warn); background:var(--warn-soft);} .call.warn .t{color:var(--warn);}
+
+/* decision cards */
+.opts{display:grid; gap:14px; margin:20px 0;}
+.opt{border:1px solid var(--rule); border-radius:3px; background:var(--surface); overflow:hidden; box-shadow:var(--shadow);}
+.opt .hd{display:flex; gap:12px; align-items:baseline; padding:14px 18px; background:var(--surface-2); border-bottom:1px solid var(--rule);}
+.opt .tag{font-family:"JetBrains Mono",monospace; font-size:.75rem; font-weight:600; color:var(--surface); background:var(--accent); padding:2px 9px; border-radius:2px;}
+.opt .ttl{font-weight:700; font-size:1rem;}
+.opt .bd{padding:14px 18px; font-size:.93rem;}
+.opt .bd p:last-child{margin-bottom:0;}
+.opt dl{margin:10px 0 0; display:grid; grid-template-columns:auto 1fr; gap:4px 12px; font-size:.88rem;}
+.opt dt{color:var(--ink-3); font-weight:500; white-space:nowrap;}
+.opt dd{margin:0;}
+
+footer{margin-top:64px; padding-top:22px; border-top:1px solid var(--rule); font-size:.8rem; color:var(--ink-3);}
+:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+@media (prefers-reduced-motion: reduce){*{transition:none!important; animation:none!important;}}
+</style>
+
+<div class="wrap">
+<header>
+  <p class="eyebrow">修士研究 / 方針相談</p>
+  <h1>深度推定の精度向上 — 測定結果と方針の再検討</h1>
+  <div class="meta">
+    <span><b>対象</b> Lotus（拡散型単眼深度推定）</span>
+    <span><b>評価</b> NYUv2 654枚 ・ Booster 228フレーム</span>
+    <span><b>更新</b> 2026-09-02</span>
+  </div>
+
+  <div class="lede">
+    <p class="t">ご相談したいこと</p>
+    <p><strong>当初の方針（物体検出による深度推定の改善）は、測定により原理的に不可能と判明しました。</strong>
+    改善余地の上限が <span class="mono">2.1%</span> しかありません。</p>
+    <p>その後、<strong>誤差の 55〜75% が大域的な低周波成分</strong>にあることを特定し、
+    そこに効く方向を <strong>8 つ探索しました</strong>が、
+    <strong>すべて「上限が小さい」か「先行研究に埋まっている」で閉じています。</strong></p>
+    <p>方針の再設定についてご判断をいただきたく、探索結果と判断材料をまとめました。</p>
+  </div>
+</header>
+
+<section>
+  <h2><span class="n">01</span>当初方針の否定 <span class="badge b-block">測定で確定</span></h2>
+  <div class="hr"></div>
+  <p>「YOLO で物体を検出し、その深度を事前情報として与える」路線について、
+  手法を作る前に<strong>達成可能な上限（Oracle）</strong>を測定しました。
+  物体領域を GT に置き換えたときに指標がどれだけ動くかを測る方法です。</p>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th>測定</th><th class="n">値</th><th>意味</th></tr></thead>
+    <tbody>
+      <tr><td>完璧な物体深度予測器があった場合の改善</td><td class="n small">2.1%</td><td>事前設定した閾値 5% 未満</td></tr>
+      <tr><td>物体領域を完全に GT 化した場合</td><td class="n">19.2%</td><td>余地の 9 割は「深度の値」ではなく「形状」</td></tr>
+      <tr><td>物体領域の誤差密度</td><td class="n">0.90</td><td>1.0 が平均。<strong>物体は誤差の集中点ではない</strong></td></tr>
+      <tr><td>数ヶ月の学習実験の最良値 vs 公式モデル</td><td class="n small">差 0.09%</td><td>実質「何もしないのと同じ」</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="call block">
+    <p class="t">前提が誤っていた</p>
+    <p>公式 Lotus は <strong>bbox 内（0.0448）の方が bbox 外（0.0523）より精度が高く</strong>、
+    物体が多い画像でも精度は落ちていませんでした。
+    「物体領域が弱点だから事前情報を注入する」という出発点自体が、データに支持されていませんでした。</p>
+  </div>
+
+  <p>鏡面・透明面（Booster データセット）でも同様に測定し、対照実験で補正した正味の余地は
+  <span class="mono">5.3%</span> でした。<strong>局所的な手がかりでは届きません。</strong></p>
+</section>
+
+<section>
+  <h2><span class="n">02</span>誤差の所在の特定 <span class="badge b-ok">再現確認済み</span></h2>
+  <div class="hr"></div>
+  <p>誤差を空間周波数で分解したところ、<strong>大域的な低周波成分が支配的</strong>でした。
+  2 データセットで一貫しています。</p>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th>誤差の成分</th><th class="n">Booster</th><th class="n">NYUv2</th></tr></thead>
+    <tbody>
+      <tr><td>大域的な傾き（3 パラメータ）</td><td class="n">22.8%</td><td class="n">8.2%</td></tr>
+      <tr><td>大域的な 2 次成分</td><td class="n">36.4%</td><td class="n">18.9%</td></tr>
+      <tr class="hi"><td><strong>低周波成分の合計</strong></td><td class="n big">75.3%</td><td class="n big">54.7%</td></tr>
+      <tr><td>局所的な手がかり（物体・材質）</td><td class="n small">5.3%</td><td class="n small">2.1%</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p><strong>局所的手がかりの 14〜26 倍</strong>の余地が大域成分にあります。
+  半年かけて追っていた方向が、余地の大きさで見て一貫して「小さい方」だったことになります。</p>
+
+  <h3>ただし後処理では届きません <span class="badge b-block">3 経路すべて閉塞</span></h3>
+  <div class="tw">
+  <table>
+    <thead><tr><th>経路</th><th>測定結果</th><th>判定</th></tr></thead>
+    <tbody>
+      <tr><td>固定バイアスを引く</td><td>同符号率 58%、|平均|/σ = 0.11</td><td class="small">系統的でない</td></tr>
+      <tr><td>複数条件で推論して平均</td><td>大域残差相関 0.67〜0.92、大域成分の削減 3.7%</td><td class="small">同じ間違いをする</td></tr>
+      <tr><td>出力から予測して補正</td><td><strong>R² = −0.79 / −0.50</strong>、適用すると 14.5% 悪化</td><td class="small">情報が無い</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>3 つ目はシーン単位の交差検証で測定しました（同一シーンのフレームは相関が高く、
+  通常の分割では過大評価されるため）。<strong>大域誤差を取るには、モデルの出力に無い情報が必要です。</strong></p>
+</section>
+
+<section>
+  <h2><span class="n">03</span>探索した 8 方向とその結末</h2>
+  <div class="hr"></div>
+  <p>誤差の所在を特定した後、そこに効く方向を順に探索しました。
+  <strong>各方向とも、手法を作り込む前に「上限の測定」または「先行研究の調査」で判定しています。</strong>
+  1 方向あたり数時間〜1 日で、作ってから失敗する事態は避けられています。</p>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th>方向</th><th>判定</th><th>根拠</th></tr></thead>
+    <tbody>
+      <tr><td>物体条件付け</td><td class="small">上限 2.1%</td><td>Oracle 測定。閾値 5% 未満</td></tr>
+      <tr><td>タイル分割による高解像度化</td><td class="small">原理的に不成立</td><td>全設定で −22.8〜−65.7%。切り出すと文脈が失われる</td></tr>
+      <tr><td>材質（鏡面・透明面）</td><td class="small">上限 5.3%</td><td>対照実験で見かけの 9.3% の半分が否定された</td></tr>
+      <tr><td>後処理による大域補正</td><td class="small">3 経路すべて閉塞</td><td>固定バイアス / 摂動平均 / 学習補正（R² &lt; 0）</td></tr>
+      <tr><td>疎な深度点</td><td class="small">先行研究</td><td>上限 43% と大きいが Marigold-DC（ICCV 2025）/ Marigold-SSD（2026）</td></tr>
+      <tr><td>平面拘束（床・壁）</td><td class="small">先行研究 + 部分問題なし</td><td>上限 23〜29%。P3Depth（CVPR 2022）。<br>支持領域の IoU 0.35 で「位置は分かるが向きが違う」ではなかった</td></tr>
+      <tr><td>ニッチ応用への展開</td><td class="small">全領域で先行研究</td><td>内視鏡・水中・農業・サーマル・悪天候すべて 2024〜2026 に実施済み</td></tr>
+      <tr><td><strong>診断駆動の層配置</strong></td><td class="small">仮説不成立</td><td><strong>今回実施。</strong>どの層に適応させても動くのは大域成分だった</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>直近の測定（診断駆動の層配置）</h3>
+  <p>「UNet の深さは空間スケールに対応するので、粗い層に適応させれば大域成分が、
+  細かい層なら局所成分が動くはず」という仮説を検証しました。成立すれば
+  「壊れている成分を測定して適応先を決める」手法が組めます。
+  LoRA のパラメータ数を揃えて比較しています（0.96M vs 0.95M）。</p>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th>適応した層</th><th class="n">全体</th><th class="n">大域成分</th><th class="n">局所成分</th><th>より動いた成分</th></tr></thead>
+    <tbody>
+      <tr><td>粗い層（mid + 24²）</td><td class="n">−4.51%</td><td class="n small">−6.08%</td><td class="n">−2.62%</td><td>GLOBAL</td></tr>
+      <tr class="hi"><td><strong>細かい層（96²）</strong></td><td class="n">−12.91%</td><td class="n small">−17.34%</td><td class="n">−7.57%</td><td><strong>GLOBAL</strong></td></tr>
+      <tr><td>全層</td><td class="n">−12.11%</td><td class="n small">−15.92%</td><td class="n">−7.51%</td><td>GLOBAL</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="call block">
+    <p class="t">仮説は成立せず</p>
+    <p><strong>高解像度層だけに適応させても、大域成分が 17.3% 悪化し、局所成分は 7.6% しか動きません。</strong>
+    拡散 UNet は残差接続で情報が全層を貫通するため、どこを触っても出力の低周波構造が変わると解釈できます。
+    配置が結果を左右すること自体は事実ですが（同パラメータ数で粗い層は細かい層の約 1/3 の害）、
+    <strong>成分を選択的に操作できるわけではなく</strong>、差別化になりません。</p>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">04</span>先行研究との関係 <span class="badge b-block">主要部分は先行あり</span></h2>
+  <div class="hr"></div>
+  <p>大域誤差に効く情報として<strong>疎な深度点</strong>（LiDAR・SfM 等）を測定し、
+  <strong>20 点で 43%、100 点で 64.5% の改善</strong>を確認しました。これは有望でしたが、調査の結果:</p>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th>項目</th><th>先行研究</th><th>状態</th></tr></thead>
+    <tbody>
+      <tr><td>疎な点による depth completion</td><td>Marigold-DC（ICCV 2025, ETH）</td><td class="small">先行</td></tr>
+      <tr><td><strong>単一ステップ拡散 + zero-init + 疎な点</strong></td><td><strong>Marigold-SSD（2026-05, DTU+ETH）</strong></td><td class="small">設計がほぼ同一</td></tr>
+      <tr><td>補間ベースラインとの比較・疎度分析</td><td>同上</td><td class="small">実施済み</td></tr>
+      <tr><td><strong>誤差の affine / residual 分解</strong></td><td><strong>PLOS Comput Biol 2025</strong></td><td class="small">先行</td></tr>
+      <tr><td>「per-image affine が支配的」</td><td>同上</td><td class="small">先行</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="call block">
+    <p class="t">設計の一致</p>
+    <p>Marigold-SSD は「単一ステップ拡散モデル + 疎な深度点 + zero-init 畳み込みで条件経路を初期化」
+    という構成です。これは本研究で計画していた設計と<strong>偶然ではなく、同じ制約から同じ結論として</strong>一致しています。
+    学習コスト 4.5 GPU 日、屋内 4 + 屋外 2 ベンチマークで評価済みです。</p>
+  </div>
+
+  <p>この分野は ETH Zürich・DTU 等が 2025〜2026 年に ICCV / ICLR / ICRA / TIP に連続して投稿しており、
+  <code>Awesome-Foundation-Model-Based-Depth</code> というキュレーションリストが存在するほど活発です。</p>
+</section>
+
+<section>
+  <h2><span class="n">05</span>手元に残っている成果 <span class="badge b-ok">検証済み</span></h2>
+  <div class="hr"></div>
+  <p>いずれも学習不要・GT 不使用で、対照実験とシーン別検証を通しています。</p>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th>内容</th><th class="n">効果</th><th>備考</th></tr></thead>
+    <tbody>
+      <tr class="hi"><td><code>processing_res</code> の設定ミス修正</td><td class="n big">+9.8%</td><td>公式デフォルト 768 に対し 512 で実験していた。<br>過去の全実験が公式に不利な条件だった</td></tr>
+      <tr><td>多解像度アンサンブル</td><td class="n big">+7.29%</td><td>Booster。勝率 30/38、平滑化対照に合格</td></tr>
+      <tr><td>反転 TTA</td><td class="n big">+2.64%</td><td>NYUv2。勝率 66%</td></tr>
+      <tr><td>疎な点 + 補間</td><td class="n">+43%（20 点）</td><td>先行研究あり（§3）</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>先行研究に見当たらない部分</h3>
+  <ul>
+    <li><strong>物体・材質条件付けの Oracle 上限の定量化</strong>（2.1% / 5.3%、対照実験付き）</li>
+    <li><strong>後処理 3 経路の到達不能性の実証</strong>（特に R² 測定による否定）</li>
+    <li><strong>アンサンブルが消しているのは局所成分</strong>という分解（大域 3.7% vs 局所 21.5%）</li>
+    <li>「なぜ疎な点が効くのか」を誤差構造から説明した点</li>
+  </ul>
+  <p>ただしこれらは<strong>いずれも分析であり、手法ではありません。</strong></p>
+</section>
+
+<section>
+  <h2><span class="n">06</span>ご判断いただきたい点</h2>
+  <div class="hr"></div>
+
+  <div class="opts">
+    <div class="opt">
+      <div class="hd"><span class="tag">A</span><span class="ttl">分析研究として構成する</span></div>
+      <div class="bd">
+        <p>誤差構造の解明と各介入の到達可能性の定量化を主貢献とする。手法は既存のものを使う。</p>
+        <dl>
+          <dt>必要作業</dt><dd>複数モデル（Depth Anything V2 等）への一般化。半日〜数日</dd>
+          <dt>想定発表先</dt><dd>MIRU / SSII / 国際会議ワークショップ</dd>
+          <dt>懸念</dt><dd><strong>「調査研究では通らない」というご指導と衝突します</strong></dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="hd"><span class="tag">B</span><span class="ttl">別の追加情報を探す</span> <span class="badge b-block">探索済み</span></div>
+      <div class="bd">
+        <p>疎な点・平面拘束・診断駆動の適応を探索し、<strong>いずれも先行研究または仮説不成立で閉じました</strong>（§3）。
+        残るのは重力方向・複数視点などですが、探索コストに対して見込みが低いと考えます。</p>
+        <dl>
+          <dt>懸念</dt><dd><strong>8 方向すべてが 1 回の調査で先行研究に当たっています。</strong>
+          分野の飽和度と論文の刊行速度から、次の案も同様になる確率が高いと見ています</dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="hd"><span class="tag">C</span><span class="ttl">応用側に土俵を移す</span> <span class="badge b-warn">要相談</span></div>
+      <div class="bd">
+        <p>深度推定そのものではなく、下流タスク側で新規性を出す。
+        「誤差は大域低周波」という測定が、どの応用が脆弱かを予測する武器になります。</p>
+        <p>ただし調査の結果、<strong>領域特化（内視鏡・水中・農業・サーマル・悪天候）は
+        すべて 2024〜2026 に実施済み</strong>でした。
+        「基盤モデル + LoRA + ニッチ領域 = SOTA」というテンプレートが安価なため、
+        多くのグループが高速に埋めています。</p>
+        <dl>
+          <dt>前提</dt><dd>研究室に応用側の設備・データ・知見が無いため、ゼロから用意する必要があります</dd>
+          <dt>懸念</dt><dd><strong>研究室のテーマ範囲に収まるか、残り期間で環境を用意できるか</strong></dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="opt">
+      <div class="hd"><span class="tag">D</span><span class="ttl">先行研究の限界を突く</span></div>
+      <div class="bd">
+        <p>Marigold-SSD が limitations に挙げている<strong>「学習時と異なる疎度での性能低下」</strong>など、
+        既知の弱点に絞って手法を作る。</p>
+        <dl>
+          <dt>必要作業</dt><dd>該当論文の再現と弱点の定量化</dd>
+          <dt>懸念</dt><dd>差分が小さくなりやすい</dd>
+        </dl>
+      </div>
+    </div>
+  </div>
+
+  <div class="call warn">
+    <p class="t">特にお伺いしたい点</p>
+    <ul style="margin-bottom:0">
+      <li>分析中心の構成（案 A）はどの程度まで許容されますか</li>
+      <li>「学会発表」の想定先は国内会議でしょうか、国際会議本会議でしょうか</li>
+      <li>応用側へのテーマ移動（案 C）は研究室の範囲内でしょうか</li>
+      <li>残り期間から見て、新規の探索（案 B）に割ける時間はどの程度でしょうか</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <h2><span class="n">07</span>参考</h2>
+  <div class="hr"></div>
+  <h3>詳細記録（リポジトリ内 <code>docs/</code>）</h3>
+  <div class="tw">
+  <table>
+    <thead><tr><th>ファイル</th><th>内容</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">phase0_findings.md</td><td>Oracle 上限測定、設定ミスの発見</td></tr>
+      <tr><td class="mono">booster_findings.md</td><td>材質別の測定、対照実験</td></tr>
+      <tr><td class="mono">global_error_findings.md</td><td>大域/局所分解、TTA、後処理の限界</td></tr>
+      <tr><td class="mono">sparse_points_findings.md</td><td>疎な点の効果測定</td></tr>
+      <tr><td class="mono">prior_work_survey.md</td><td>先行研究調査</td></tr>
+      <tr><td class="mono">adaptation_placement_findings.md</td><td>診断駆動の層配置（今回）</td></tr>
+      <tr><td class="mono">tiled_inference_results.md</td><td>タイル分割推論（不採用）</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>主要な先行研究</h3>
+  <ul>
+    <li>Viola et al., <em>Marigold-DC: Zero-Shot Monocular Depth Completion with Guided Diffusion</em>, ICCV 2025</li>
+    <li>Gregorek et al., <em>Need for Speed: Zero-Shot Depth Completion with Single-Step Diffusion</em>, arXiv 2603.10584 (2026-05)</li>
+    <li><em>Human-like monocular depth biases in deep neural networks</em>, PLOS Computational Biology, 2025</li>
+    <li>Zama Ramirez et al., <em>Booster: a Benchmark for Depth from Images of Specular and Transparent Surfaces</em>, TPAMI 2023</li>
+  </ul>
+</section>
+
+<footer>
+  深度推定の精度向上 — 測定結果と方針の再検討 ・ 2026-09-02<br>
+  評価プロトコル: NYUv2 test 654枚 / Booster train 228フレーム ・ least-square alignment 後の abs_rel
+</footer>
+</div>
+
+</body>
+</html>

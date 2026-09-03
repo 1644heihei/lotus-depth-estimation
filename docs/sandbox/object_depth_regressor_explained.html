@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>物体サイズ→深度リグレッサ — 視覚的ガイド</title>
+  <style>
+    :root {
+      --bg: #f0f4f8;
+      --surface: #ffffff;
+      --text: #1a2332;
+      --muted: #5c6b7a;
+      --border: #dde4ec;
+      --accent: #2563eb;
+      --accent-soft: #eff6ff;
+      --step1: #6366f1;
+      --step1-soft: #eef2ff;
+      --step2: #059669;
+      --step2-soft: #ecfdf5;
+      --warn: #d97706;
+      --warn-soft: #fffbeb;
+      --danger: #dc2626;
+      --danger-soft: #fef2f2;
+      --hypersim: #7c3aed;
+      --nyu: #ea580c;
+      --shadow: 0 4px 24px rgba(15, 23, 42, 0.07);
+      --radius: 14px;
+      --font: "Segoe UI", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", Meiryo, sans-serif;
+      --mono: "Cascadia Code", Consolas, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.75; font-size: 16px; }
+
+    .hero {
+      background: linear-gradient(135deg, #312e81 0%, #6366f1 45%, #06b6d4 100%);
+      color: #fff;
+      padding: 3rem 1.5rem 4.5rem;
+    }
+    .hero-inner { max-width: 980px; margin: 0 auto; }
+    .hero h1 { font-size: clamp(1.5rem, 4vw, 2.1rem); margin-bottom: 0.6rem; }
+    .hero p { opacity: 0.93; max-width: 760px; font-size: 1.05rem; }
+    .hero-badges { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1.25rem; }
+    .badge { padding: 0.2rem 0.7rem; border-radius: 999px; font-size: 0.78rem; font-weight: 600; background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.25); }
+
+    .container { max-width: 980px; margin: -2.5rem auto 4rem; padding: 0 1.25rem; }
+
+    nav.toc, section.card {
+      background: var(--surface);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      border: 1px solid var(--border);
+      padding: 1.75rem;
+      margin-bottom: 1.75rem;
+    }
+    nav.toc h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.75rem; }
+    nav.toc ol { padding-left: 1.25rem; columns: 2; column-gap: 2rem; }
+    nav.toc a { color: var(--accent); text-decoration: none; font-size: 0.92rem; }
+    nav.toc a:hover { text-decoration: underline; }
+
+    section.card h2 {
+      font-size: 1.35rem;
+      margin-bottom: 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 2px solid var(--border);
+    }
+    section.card h3 { font-size: 1.05rem; margin: 1.5rem 0 0.75rem; color: var(--text); }
+    p, li { color: #334155; }
+    p { margin-bottom: 0.85rem; }
+    ul, ol { padding-left: 1.4rem; margin-bottom: 1rem; }
+    li { margin-bottom: 0.35rem; }
+
+    .callout {
+      border-radius: 10px;
+      padding: 1rem 1.15rem;
+      margin: 1rem 0;
+      font-size: 0.95rem;
+    }
+    .callout.info { background: var(--accent-soft); border-left: 4px solid var(--accent); }
+    .callout.warn { background: var(--warn-soft); border-left: 4px solid var(--warn); }
+    .callout.danger { background: var(--danger-soft); border-left: 4px solid var(--danger); }
+    .callout.step1 { background: var(--step1-soft); border-left: 4px solid var(--step1); }
+    .callout.step2 { background: var(--step2-soft); border-left: 4px solid var(--step2); }
+
+    /* Big picture pipeline */
+    .pipeline {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      margin: 1.5rem 0;
+    }
+    .pipe-row {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 1rem;
+      align-items: stretch;
+    }
+    .pipe-label {
+      writing-mode: horizontal-tb;
+      font-weight: 700;
+      font-size: 0.85rem;
+      text-align: center;
+      padding: 0.75rem 0.5rem;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .pipe-label.s1 { background: var(--step1-soft); color: var(--step1); }
+    .pipe-label.s2 { background: var(--step2-soft); color: var(--step2); }
+    .pipe-steps {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.75rem 0;
+    }
+    .box {
+      background: #f8fafc;
+      border: 2px solid var(--border);
+      border-radius: 10px;
+      padding: 0.55rem 0.85rem;
+      font-size: 0.82rem;
+      font-weight: 600;
+      text-align: center;
+      min-width: 90px;
+    }
+    .box.img { background: #fef3c7; border-color: #fbbf24; }
+    .box.yolo { background: #fce7f3; border-color: #f472b6; }
+    .box.csv { background: #e0e7ff; border-color: #818cf8; }
+    .box.mlp { background: #ddd6fe; border-color: #8b5cf6; }
+    .box.lotus { background: #cffafe; border-color: #22d3ee; }
+    .box.depth { background: #d1fae5; border-color: #34d399; }
+    .arrow { color: var(--muted); font-size: 1.1rem; font-weight: bold; }
+
+    /* Scene illustration */
+    .scene-demo {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+      margin: 1.25rem 0;
+    }
+    @media (max-width: 700px) { .scene-demo { grid-template-columns: 1fr; } nav.toc ol { columns: 1; } .pipe-row { grid-template-columns: 1fr; } }
+
+    .scene-canvas {
+      position: relative;
+      aspect-ratio: 4/3;
+      background: linear-gradient(180deg, #87ceeb 0%, #87ceeb 35%, #c4a882 35%, #a08060 100%);
+      border-radius: var(--radius);
+      border: 2px solid var(--border);
+      overflow: hidden;
+    }
+    .scene-canvas .floor { position: absolute; bottom: 0; left: 0; right: 0; height: 65%; background: linear-gradient(180deg, #b8956a, #8b6914); }
+    .bbox {
+      position: absolute;
+      border: 3px solid;
+      border-radius: 4px;
+      font-size: 0.65rem;
+      font-weight: 700;
+      padding: 2px 4px;
+      background: rgba(255,255,255,0.75);
+    }
+    .bbox.chair { left: 15%; bottom: 22%; width: 28%; height: 38%; border-color: #2563eb; color: #2563eb; }
+    .bbox.table { right: 12%; bottom: 18%; width: 35%; height: 22%; border-color: #059669; color: #059669; }
+    .bbox.lamp { left: 55%; bottom: 48%; width: 12%; height: 28%; border-color: #dc2626; color: #dc2626; }
+
+    .scene-caption { font-size: 0.85rem; color: var(--muted); margin-top: 0.5rem; text-align: center; }
+
+    /* CSV table */
+    .csv-wrap { overflow-x: auto; margin: 1rem 0; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    th, td { border: 1px solid var(--border); padding: 0.45rem 0.6rem; text-align: left; }
+    th { background: #f1f5f9; font-weight: 700; }
+    tr:nth-child(even) td { background: #fafbfc; }
+    code { font-family: var(--mono); font-size: 0.85em; background: #f1f5f9; padding: 0.1em 0.35em; border-radius: 4px; }
+
+    /* MLP diagram */
+    .mlp-diagram {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      padding: 1.5rem;
+      background: #f8fafc;
+      border-radius: var(--radius);
+      border: 1px dashed var(--border);
+      margin: 1rem 0;
+    }
+    .mlp-node {
+      padding: 0.6rem 1rem;
+      border-radius: 10px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-align: center;
+      min-width: 100px;
+    }
+    .mlp-in { background: #e0e7ff; border: 2px solid #818cf8; }
+    .mlp-h { background: #ddd6fe; border: 2px solid #8b5cf6; }
+    .mlp-out { background: #d1fae5; border: 2px solid #34d399; }
+
+    /* Pre-depth paint demo */
+    .predepth-demo {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0.75rem;
+      margin: 1rem 0;
+    }
+    @media (max-width: 600px) { .predepth-demo { grid-template-columns: 1fr; } }
+    .predepth-panel {
+      border-radius: 10px;
+      border: 2px solid var(--border);
+      overflow: hidden;
+      text-align: center;
+    }
+    .predepth-panel .panel-head { font-size: 0.75rem; font-weight: 700; padding: 0.4rem; background: #f1f5f9; }
+    .predepth-panel .panel-body {
+      height: 100px;
+      position: relative;
+    }
+    .panel-global { background: linear-gradient(135deg, #64748b, #94a3b8); }
+    .panel-paint { background: linear-gradient(135deg, #64748b 40%, #3b82f6 40%, #3b82f6 70%, #64748b 70%); }
+    .panel-fused { background: linear-gradient(135deg, #64748b 30%, #2563eb 30%, #2563eb 55%, #059669 55%, #059669 75%, #64748b 75%); }
+
+    /* Metrics */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    .metric-card {
+      border-radius: 10px;
+      padding: 1rem;
+      border: 1px solid var(--border);
+      text-align: center;
+    }
+    .metric-card .val { font-size: 1.8rem; font-weight: 800; line-height: 1.2; }
+    .metric-card .lbl { font-size: 0.8rem; color: var(--muted); margin-top: 0.25rem; }
+    .metric-card.good .val { color: var(--step2); }
+    .metric-card.mid .val { color: var(--warn); }
+    .metric-card.bad .val { color: var(--danger); }
+
+    .compare-table { margin: 1rem 0; }
+    .compare-table td.num { font-family: var(--mono); text-align: right; }
+    .compare-table tr.best td { background: #ecfdf5; font-weight: 600; }
+
+    /* Data split */
+    .split-visual {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    @media (max-width: 600px) { .split-visual { grid-template-columns: 1fr; } }
+    .split-box {
+      border-radius: var(--radius);
+      padding: 1.25rem;
+      border: 2px solid;
+    }
+    .split-box.train { border-color: var(--hypersim); background: #f5f3ff; }
+    .split-box.test { border-color: var(--nyu); background: #fff7ed; }
+    .split-box h4 { margin-bottom: 0.5rem; }
+    .split-box.train h4 { color: var(--hypersim); }
+    .split-box.test h4 { color: var(--nyu); }
+
+    .tag {
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 700;
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+      margin-right: 0.25rem;
+    }
+    .tag.ok { background: #d1fae5; color: #065f46; }
+    .tag.ng { background: #fee2e2; color: #991b1b; }
+
+    .formula {
+      font-family: var(--mono);
+      background: #1e293b;
+      color: #e2e8f0;
+      padding: 1rem 1.25rem;
+      border-radius: 10px;
+      margin: 1rem 0;
+      font-size: 0.88rem;
+      line-height: 1.8;
+    }
+    .formula .comment { color: #94a3b8; }
+  </style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="hero-inner">
+    <h1>物体サイズ → 深度リグレッサ<br>何をしているか — 視覚ガイド</h1>
+    <p>
+      RGB画像をそのまま学習するのではなく、YOLOで見つけた<strong>物体ごとの数値</strong>（クラス・大きさ）から
+      <strong>深度1個</strong>を予測し、それを pre-depth として Lotus に渡す、2段階の仕組みです。
+    </p>
+    <div class="hero-badges">
+      <span class="badge">Step 1: 表形式MLP（約90秒）</span>
+      <span class="badge">Step 2: Lotus 深度推論</span>
+      <span class="badge">Lotus UNet 学習ではない</span>
+      <span class="badge">更新: 2026-07-31</span>
+    </div>
+  </div>
+</header>
+
+<div class="container">
+
+  <nav class="toc">
+    <h2>目次</h2>
+    <ol>
+      <li><a href="#overview">全体像（1分で理解）</a></li>
+      <li><a href="#not-this">やっていないこと</a></li>
+      <li><a href="#step0">データ準備 — 物体行CSV</a></li>
+      <li><a href="#step1">Step 1 — 小さいMLPの学習</a></li>
+      <li><a href="#baseline">ベースラインとは</a></li>
+      <li><a href="#metrics">abs_rel と δ1 の意味</a></li>
+      <li><a href="#step2">Step 2 — pre-depth → Lotus</a></li>
+      <li><a href="#split">訓練 / テストの分け方</a></li>
+      <li><a href="#results">いまの精度</a></li>
+      <li><a href="#files">出力ファイル</a></li>
+    </ol>
+  </nav>
+
+  <!-- ========== OVERVIEW ========== -->
+  <section class="card" id="overview">
+    <h2>1. 全体像（1分で理解）</h2>
+    <p>ユーザー要件は2段階です。<strong>Step 1</strong>で「物体の大きさと深度の関係」を学び、<strong>Step 2</strong>でその結果を使って最終的な深度マップを出します。</p>
+
+    <div class="pipeline">
+      <div class="pipe-row">
+        <div class="pipe-label s1">Step 1<br>学習</div>
+        <div class="pipe-steps">
+          <span class="box img">Hypersim<br>RGB+GT深度</span>
+          <span class="arrow">→</span>
+          <span class="box yolo">YOLO<br>検出済み</span>
+          <span class="arrow">→</span>
+          <span class="box csv">*_objects.csv<br>1行=1物体</span>
+          <span class="arrow">→</span>
+          <span class="box mlp">MLP<br>約1.2万param</span>
+          <span class="arrow">→</span>
+          <span class="box depth">model.pt</span>
+        </div>
+      </div>
+      <div class="pipe-row">
+        <div class="pipe-label s2">Step 2<br>推論</div>
+        <div class="pipe-steps">
+          <span class="box img">任意RGB</span>
+          <span class="arrow">→</span>
+          <span class="box yolo">YOLO</span>
+          <span class="arrow">→</span>
+          <span class="box mlp">MLPで<br>物体深度</span>
+          <span class="arrow">→</span>
+          <span class="box csv">pre-depth<br>画像</span>
+          <span class="arrow">→</span>
+          <span class="box lotus">Lotus 9ch<br>詳細UNet</span>
+          <span class="arrow">→</span>
+          <span class="box depth">深度マップ</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout info">
+      <strong>なぜ Step 1 が90秒で終わる？</strong><br>
+      画像をUNetに通していません。CSVの数値行（約9万行）を小さなMLPに入れるだけです。
+      Lotus detail 学習（数万step）とは計算量が桁違いに小さいです。
+    </div>
+  </section>
+
+  <!-- ========== NOT THIS ========== -->
+  <section class="card" id="not-this">
+    <h2>2. やっていないこと（混同しやすい点）</h2>
+    <div class="compare-table">
+      <table>
+        <thead>
+          <tr><th></th><th>今回（リグレッサ）</th><th>以前の Approach A（12ch）</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>学習対象</td><td>数値MLP（表）</td><td>Lotus UNet（畳み込み）</td></tr>
+          <tr><td>入力</td><td>class, bbox_w, bbox_h など</td><td>RGB + pre-depth + class_map 画像</td></tr>
+          <tr><td>pre-depth の作り方</td><td>MLPが予測した定数深度をbbox内に塗る</td><td>Lotus crop 推定を融合</td></tr>
+          <tr><td>学習時間</td><td>約1〜2分</td><td>数時間〜</td></tr>
+          <tr><td>出力</td><td>model.pt（52KB）</td><td>UNet重み（GB級）</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ========== STEP 0 CSV ========== -->
+  <section class="card" id="step0">
+    <h2>3. データ準備 — 物体行 CSV とは</h2>
+    <p>1枚の画像から YOLO で複数物体を検出し、<strong>各物体について GT深度を1個</strong>取り出して CSV に書きます。</p>
+
+    <div class="scene-demo">
+      <div>
+        <div class="scene-canvas">
+          <div class="floor"></div>
+          <div class="bbox chair">chair<br>score 0.82</div>
+          <div class="bbox table">dining table<br>score 0.91</div>
+          <div class="bbox lamp">lamp<br>score 0.67</div>
+        </div>
+        <p class="scene-caption">↑ 画像 + YOLO bbox（例）</p>
+      </div>
+      <div>
+        <p style="font-size:0.9rem; margin-bottom:0.5rem;"><strong>bbox 内の GT 深度 → 中央値を1行に</strong></p>
+        <div class="csv-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>class</th><th>bbox_w</th><th>bbox_h</th><th>depth_gt_m</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>chair (56)</td><td>0.28</td><td>0.38</td><td><strong>2.41 m</strong></td></tr>
+              <tr><td>table (60)</td><td>0.35</td><td>0.22</td><td><strong>3.15 m</strong></td></tr>
+              <tr><td>lamp (39)</td><td>0.12</td><td>0.28</td><td><strong>4.80 m</strong></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="scene-caption">↑ <code>rgb_cam_XXXX_objects.csv</code>（1ファイル = 1画像）</p>
+      </div>
+    </div>
+
+    <ul>
+      <li><code>bbox_w</code> = 横幅 ÷ 画像幅（0〜1）</li>
+      <li><code>bbox_h</code> = 高さ ÷ 画像高さ（0〜1）</li>
+      <li><code>depth_gt_m</code> = bbox 内 GT深度マップの<strong>中央値</strong> [メートル]</li>
+    </ul>
+    <p>Hypersim train: <strong>90,684 物体</strong> / 36,126 画像分を生成済み。</p>
+  </section>
+
+  <!-- ========== STEP 1 MLP ========== -->
+  <section class="card" id="step1">
+    <h2>4. Step 1 — 小さい MLP の学習</h2>
+    <p>CSV の各行を「教師データ1件」として、<strong>数値 → 深度</strong> の関数をフィットします。</p>
+
+    <div class="mlp-diagram">
+      <div class="mlp-node mlp-in">class_id<br>→ embedding</div>
+      <span class="arrow">+</span>
+      <div class="mlp-node mlp-in">bbox_w<br>bbox_h<br>area<br>cy</div>
+      <span class="arrow">→</span>
+      <div class="mlp-node mlp-h">Linear 128<br>ReLU</div>
+      <span class="arrow">→</span>
+      <div class="mlp-node mlp-h">Linear 64<br>ReLU</div>
+      <span class="arrow">→</span>
+      <div class="mlp-node mlp-out">log(depth)<br>→ exp → m</div>
+    </div>
+
+    <div class="callout step1">
+      <strong>学習データ:</strong> Hypersim train のみ（NYUv2 は使わない）<br>
+      <strong>分割:</strong> 画像単位で 95% train / 5% val（同じ画像の物体が train と val に混ざらない）<br>
+      <strong>Loss:</strong> L1( log(予測深度), log(GT深度) )<br>
+      <strong>パラメータ:</strong> 約 12,465 個 → だから速い
+    </div>
+
+    <h3>1物体の予測イメージ</h3>
+    <div class="formula">
+入力:  class=56(chair),  bbox_w=0.28,  bbox_h=0.38,  area=0.106,  cy=0.55
+       ↓ MLP
+出力:  depth_pred = 2.8 m
+       ↓ 評価（Step 1）
+GT:    depth_gt   = 2.4 m  →  abs_rel = |2.8-2.4|/2.4 = 0.17  →  δ1 OK（ratio=1.17&lt;1.25）
+    </div>
+  </section>
+
+  <!-- ========== BASELINE ========== -->
+  <section class="card" id="baseline">
+    <h2>5. ベースライン（比較用の単純モデル）</h2>
+    <p>MLP が「ちゃんと学習する価値があるか」を見るための<strong>下限・参照</strong>です。</p>
+
+    <div class="compare-table">
+      <table>
+        <thead>
+          <tr><th>名前</th><th>やっていること</th><th>比喩</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Global median</strong></td>
+            <td>全部の物体に同じ深度（≈37m）を返す</td>
+            <td>「とにかく平均を言う」</td>
+          </tr>
+          <tr>
+            <td><strong>Per-class median</strong></td>
+            <td>クラスごとの典型深度を返す（サイズは無視）</td>
+            <td>「椅子ならだいたい2m」</td>
+          </tr>
+          <tr>
+            <td><strong>Linear</strong></td>
+            <td>class + サイズを直線でフィット</td>
+            <td>「MLPより単純な学習」</td>
+          </tr>
+          <tr class="best">
+            <td><strong>MLP</strong></td>
+            <td>class + サイズを非線形でフィット</td>
+            <td>「今回の本命」</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ========== METRICS ========== -->
+  <section class="card" id="metrics">
+    <h2>6. abs_rel と δ1 — 入力が数値でも深度同士の比較</h2>
+    <p>Step 1 では<strong>物体1個 = 深度スカラー1個</strong>。評価は「予測深度 vs GT深度」の近さです。画素ではありません。</p>
+
+    <div class="formula">
+abs_rel = mean( |pred − gt| / gt )        <span class="comment">← 平均的に何%ズレてるか（小さいほど良い）</span>
+
+ratio   = max(pred/gt, gt/pred)
+δ1      = ratio &lt; 1.25 の物体の割合     <span class="comment">← ±25%以内に収まった物体の%</span>
+    </div>
+
+    <div class="compare-table">
+      <table>
+        <thead>
+          <tr><th>評価の種類</th><th>1サンプル</th><th>δ1 の意味</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Step 1（物体単位）</strong></td>
+            <td>物体1個</td>
+            <td>「物体の何%が深度±25%以内か」</td>
+          </tr>
+          <tr>
+            <td><strong>Step 2（画像単位）</strong></td>
+            <td>画素1個</td>
+            <td>「画素の何%が深度±25%以内か」（Lotus標準）</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ========== STEP 2 ========== -->
+  <section class="card" id="step2">
+    <h2>7. Step 2 — pre-depth を作って Lotus に渡す</h2>
+    <p>MLP が出した<strong>物体ごとの深度1個</strong>を、画像上の bbox 内に<strong>定数で塗り</strong>、Lotus の global 深度と融合します。</p>
+
+    <div class="predepth-demo">
+      <div class="predepth-panel">
+        <div class="panel-head">① Lotus global 深度</div>
+        <div class="panel-body panel-global"></div>
+      </div>
+      <div class="predepth-panel">
+        <div class="panel-head">② MLP深度を bbox 内に塗る</div>
+        <div class="panel-body panel-paint"></div>
+      </div>
+      <div class="predepth-panel">
+        <div class="panel-head">③ lstsq 整合 + 融合 → pre-depth</div>
+        <div class="panel-body panel-fused"></div>
+      </div>
+    </div>
+
+    <ol>
+      <li><code>Lotus-D(RGB)</code> で global disparity マップを取得</li>
+      <li>各 bbox: MLP → depth [m] → disparity → bbox 内を<strong>同じ値で塗る</strong></li>
+      <li>global にスケール合わせ（lstsq）して pre-depth 画像を完成</li>
+      <li>9ch 詳細 Lotus（RGB + pre-depth + valid mask）で最終深度推論</li>
+    </ol>
+
+    <div class="callout step2">
+      Step 2 の評価は<strong>NYUv2 654枚全体</strong>の abs_rel / δ1（Lotus標準プロトコル）。
+      smoke test（10枚）では abs_rel ≈ 0.093 でしたが、本番654枚は未実行です。
+    </div>
+  </section>
+
+  <!-- ========== DATA SPLIT ========== -->
+  <section class="card" id="split">
+    <h2>8. 訓練 / テストの分け方（リーク防止）</h2>
+    <div class="split-visual">
+      <div class="split-box train">
+        <h4>🟣 Hypersim train — Step 1 学習に使う</h4>
+        <ul>
+          <li><span class="tag ok">OK</span> MLP 学習</li>
+          <li><span class="tag ok">OK</span> 5% holdout 検証</li>
+          <li><span class="tag ng">NG</span> NYUv2 は一切使わない</li>
+        </ul>
+      </div>
+      <div class="split-box test">
+        <h4>🟠 NYUv2 test — 評価専用</h4>
+        <ul>
+          <li><span class="tag ok">OK</span> Step 1 最終評価（物体単位）</li>
+          <li><span class="tag ok">OK</span> Step 2 深度マップ評価</li>
+          <li><span class="tag ng">NG</span> 学習・HP調整には使わない</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== RESULTS ========== -->
+  <section class="card" id="results">
+    <h2>9. いまの精度（2026-07-31 時点）</h2>
+
+    <h3>Step 1 — 物体単位（MLP）</h3>
+    <div class="metrics-grid">
+      <div class="metric-card mid">
+        <div class="val">0.375</div>
+        <div class="lbl">Hypersim val abs_rel ↓</div>
+      </div>
+      <div class="metric-card mid">
+        <div class="val">0.419</div>
+        <div class="lbl">Hypersim val δ1 ↑</div>
+      </div>
+      <div class="metric-card bad">
+        <div class="val">0.703</div>
+        <div class="lbl">NYUv2 test abs_rel ↓</div>
+      </div>
+      <div class="metric-card bad">
+        <div class="val">0.155</div>
+        <div class="lbl">NYUv2 test δ1 ↑</div>
+      </div>
+    </div>
+
+    <div class="compare-table">
+      <table>
+        <thead>
+          <tr><th>データ</th><th>MLP abs_rel</th><th>Per-class median</th><th>解釈</th></tr>
+        </thead>
+        <tbody>
+          <tr class="best">
+            <td>Hypersim val</td><td class="num">0.375</td><td class="num">0.514</td>
+            <td>Hypersim 内では MLP が有効</td>
+          </tr>
+          <tr>
+            <td>NYUv2 test</td><td class="num">0.703</td><td class="num">0.594</td>
+            <td>実写では MLP が baseline より悪い（ドメインギャップ）</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Step 2 — NYUv2 画像全体（10枚 smoke のみ）</h3>
+    <div class="metrics-grid">
+      <div class="metric-card good">
+        <div class="val">0.093</div>
+        <div class="lbl">abs_rel ↓（参考: 公式 Lotus ≈ 0.05）</div>
+      </div>
+      <div class="metric-card good">
+        <div class="val">0.902</div>
+        <div class="lbl">δ1 ↑</div>
+      </div>
+    </div>
+    <div class="callout warn">654枚フル評価は未実行。10枚だけなので Step 2 の数値は参考程度です。</div>
+  </section>
+
+  <!-- ========== FILES ========== -->
+  <section class="card" id="files">
+    <h2>10. 出力ファイル一覧</h2>
+    <div class="compare-table">
+      <table>
+        <thead>
+          <tr><th>パス</th><th>内容</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>output/object_depth_regressor/model.pt</code></td><td>Step 1 MLP 重み（52KB）</td></tr>
+          <tr><td><code>output/object_depth_regressor/config.json</code></td><td>設定 + ベースライン中央値</td></tr>
+          <tr><td><code>output/object_depth_regressor/metrics_hypersim_holdout.json</code></td><td>Step 1 評価結果</td></tr>
+          <tr><td><code>.../hypersim_yolo_detections/train/**/*_objects.csv</code></td><td>学習用物体行（90,684件）</td></tr>
+          <tr><td><code>.../nyuv2_detail_artifacts/test/**/*_objects.csv</code></td><td>評価用物体行（1,081件）</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>実行コマンド</h3>
+    <div class="formula">
+<span class="comment"># Step 1 学習（Hypersim only）</span>
+powershell -File train_scripts/train_object_depth_regressor.ps1
+
+<span class="comment"># Step 1 評価（NYUv2 test）</span>
+python eval_object_depth_regressor.py --model_dir=output/object_depth_regressor --split=nyuv2_test ...
+
+<span class="comment"># Step 2 NYUv2 深度評価</span>
+powershell -File train_scripts/eval_regressor_predepth_nyuv2.ps1
+    </div>
+  </section>
+
+</div>
+</body>
+</html>
