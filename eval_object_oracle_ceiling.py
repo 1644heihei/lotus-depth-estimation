@@ -17,6 +17,12 @@ Variants measured (see docs/lotus_improvement_plan.md, Phase 0-2):
   B_mask      object seg masks fully replaced by GT
   BG          the complement (everything outside objects) replaced by GT
               -> the share of the error that lives in the background
+  *_ctrl      CONTROL: the same masks circularly translated somewhere unrelated.
+              Same area and shape, no object correspondence. Added after the Booster
+              run showed this control absorbs over half of an apparently strong
+              material oracle - where the model is globally off, substituting GT
+              anywhere helps regardless of what the mask means. Only the excess over
+              this control is attributable to objects.
 
 B and BG partition the image, so their gains show how the total error splits
 between object and non-object regions.
@@ -52,7 +58,8 @@ from pipeline import LotusDPipeline
 from utils.object_detection_cache import load_detections
 from utils.seed_all import seed_all
 
-VARIANTS = ["baseline", "A_bbox", "A_mask", "B_bbox", "B_mask", "BG"]
+VARIANTS = ["baseline", "A_bbox", "A_mask", "B_bbox", "B_mask", "BG",
+            "A_bbox_ctrl", "A_mask_ctrl", "B_bbox_ctrl", "B_mask_ctrl"]
 
 
 def parse_args():
@@ -101,6 +108,8 @@ def parse_args():
     p.add_argument("--half_precision", action="store_true")
     p.add_argument("--max_images", type=int, default=0)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--n_controls", type=int, default=3,
+                   help="Random relocations averaged per control mask.")
     p.add_argument(
         "--min_object_pixels",
         type=int,
@@ -301,6 +310,7 @@ def main():
             yolo = YOLO(args.yolo_model)
         return yolo
 
+    rng = np.random.default_rng(args.seed)
     acc = {v: {"absrel": [], "d1": []} for v in VARIANTS}
     rows = []
     n_scored = 0
@@ -346,6 +356,7 @@ def main():
             )
         )
 
+        h, w = valid.shape
         bbox_union = (
             np.any(np.stack(bbox_masks), axis=0) if bbox_masks else np.zeros((h, w), bool)
         )
@@ -361,6 +372,21 @@ def main():
             "B_mask": oracle_replace(depth_base, gt, seg_union, valid),
             "BG": oracle_replace(depth_base, gt, ~bbox_union, valid),
         }
+
+        # Controls: identical masks, relocated. Averaged over several offsets so the
+        # control is not itself a lucky draw.
+        for tag, masks, union in (("bbox", bbox_masks, bbox_union),
+                                  ("mask", seg_masks, seg_union)):
+            accA = np.zeros_like(depth_base)
+            accB = np.zeros_like(depth_base)
+            for _ in range(args.n_controls):
+                dy = int(rng.integers(h // 5, 4 * h // 5))
+                dx = int(rng.integers(w // 5, 4 * w // 5))
+                shifted = [np.roll(m, (dy, dx), axis=(0, 1)) for m in masks]
+                accA += oracle_level(depth_base, gt, shifted, valid, args.min_object_pixels)
+                accB += oracle_replace(depth_base, gt, np.roll(union, (dy, dx), axis=(0, 1)), valid)
+            variants[f"A_{tag}_ctrl"] = accA / args.n_controls
+            variants[f"B_{tag}_ctrl"] = accB / args.n_controls
 
         row = {
             "filename": str(rgb_path.relative_to(rgb_dir)).replace("\\", "/"),
@@ -400,6 +426,13 @@ def main():
             "gain_pct": 100.0 * (base - a) / base if base > 0 else 0.0,
         }
 
+    summary["net_of_control"] = {}
+    for k in ("A_bbox", "A_mask", "B_bbox", "B_mask"):
+        summary["net_of_control"][k] = {
+            "real": summary["variants"][k]["gain_pct"],
+            "control": summary["variants"][k + "_ctrl"]["gain_pct"],
+            "net": summary["variants"][k]["gain_pct"] - summary["variants"][k + "_ctrl"]["gain_pct"],
+        }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     with (out_dir / "per_sample_metrics.csv").open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
@@ -413,6 +446,10 @@ def main():
         "B_bbox": "Oracle B  bbox  (full GT)",
         "B_mask": "Oracle B  mask  (full GT)",
         "BG": "Oracle BG (background full GT)",
+        "A_bbox_ctrl": "  control: bbox relocated",
+        "A_mask_ctrl": "  control: mask relocated",
+        "B_bbox_ctrl": "  control: bbox relocated",
+        "B_mask_ctrl": "  control: mask relocated",
     }
     print(f"\n{'variant':<32} {'abs_rel':>9} {'delta1':>8} {'gain':>9} {'gain%':>8}")
     print("-" * 70)
