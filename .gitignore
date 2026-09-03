@@ -8,6 +8,7 @@ venv/
 .vscode/
 data/
 datasets/eval/depth/nyuv2/
+datasets/eval/depth/scannet/
 yolov8n-seg.pt
 
 
