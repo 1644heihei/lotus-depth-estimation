@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Object Depth Regressor — 現在の実行フロー</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #11151b;
+      --panel: #1a2029;
+      --line: #394453;
+      --text: #e8edf4;
+      --muted: #9aa7b8;
+      --accent: #69a8ff;
+      --done: #65c68b;
+      --running: #f2bd63;
+      --pending: #778394;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "Yu Gothic UI", sans-serif;
+      line-height: 1.6;
+    }
+    main { max-width: 1100px; margin: 0 auto; padding: 40px 24px 64px; }
+    h1 { margin: 0 0 6px; font-size: 28px; }
+    h2 { margin-top: 38px; font-size: 19px; }
+    .lead, .note { color: var(--muted); }
+    .status {
+      display: inline-block;
+      margin-top: 14px;
+      padding: 5px 11px;
+      border: 1px solid var(--running);
+      border-radius: 999px;
+      color: var(--running);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .step {
+      position: relative;
+      min-height: 145px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+    }
+    .step::after {
+      content: "→";
+      position: absolute;
+      right: -13px;
+      top: 52px;
+      color: var(--muted);
+      z-index: 2;
+    }
+    .step:nth-child(4)::after, .step:last-child::after { content: ""; }
+    .number { color: var(--accent); font-size: 12px; font-weight: 700; }
+    .step h3 { margin: 5px 0 7px; font-size: 16px; }
+    .step p { margin: 0; color: var(--muted); font-size: 13px; }
+    .done { border-color: var(--done); }
+    .running { border-color: var(--running); }
+    .pending { border-color: var(--pending); opacity: .8; }
+    .tag { margin-top: 10px; font-size: 12px; font-weight: 700; }
+    .done .tag { color: var(--done); }
+    .running .tag { color: var(--running); }
+    .pending .tag { color: var(--pending); }
+    .channels {
+      display: grid;
+      grid-template-columns: 4fr 4fr 1fr;
+      gap: 8px;
+      margin-top: 14px;
+    }
+    .channel {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      text-align: center;
+    }
+    .channel strong { display: block; color: var(--accent); font-size: 19px; }
+    .paths {
+      padding: 16px 20px;
+      border-left: 3px solid var(--accent);
+      background: var(--panel);
+      font-size: 13px;
+    }
+    code { color: #b9d5ff; overflow-wrap: anywhere; }
+    @media (max-width: 800px) {
+      .flow { grid-template-columns: 1fr 1fr; }
+      .step::after { content: ""; }
+    }
+    @media (max-width: 520px) {
+      .flow, .channels { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Object Depth Regressor — 現在の実行フロー</h1>
+  <div class="lead">物体の大きさから深度を推定し、Lotus-Dの事前情報として利用する処理です。</div>
+  <div class="status">現在: 専用9ch UNet学習完了・NYUv2評価を再実行</div>
+
+  <h2>学習から最終評価まで</h2>
+  <section class="flow">
+    <article class="step done">
+      <div class="number">STEP 1</div>
+      <h3>物体レコード作成</h3>
+      <p>YOLOのclass・bbox・scoreと、GT深度[m]をCSVへ保存。</p>
+      <div class="tag">完了</div>
+    </article>
+    <article class="step done">
+      <div class="number">STEP 2</div>
+      <h3>Regressor学習</h3>
+      <p>Hypersim trainだけを使用し、物体ごとのmetric depthを学習。</p>
+      <div class="tag">完了</div>
+    </article>
+    <article class="step done">
+      <div class="number">STEP 3</div>
+      <h3>画像内校正</h3>
+      <p>1/depthをLotusの相対disparityへrobust affineで合わせる。</p>
+      <div class="tag">完了</div>
+    </article>
+    <article class="step done">
+      <div class="number">STEP 4</div>
+      <h3>Pre-depth生成</h3>
+      <p>校正済み物体深度をbboxへ配置。59,543件を圧縮保存。</p>
+      <div class="tag">完了</div>
+    </article>
+    <article class="step done">
+      <div class="number">STEP 5</div>
+      <h3>専用9ch UNet学習</h3>
+      <p>公式4ch Lotus-Dから拡張し、12,000ステップ新規学習。</p>
+      <div class="tag">完了</div>
+    </article>
+    <article class="step running">
+      <div class="number">STEP 6</div>
+      <h3>NYUv2開発評価</h3>
+      <p>同一モデルで3条件を比較し、実装とcheckpointを確定。</p>
+      <div class="tag">実行中</div>
+    </article>
+    <article class="step pending">
+      <div class="number">STEP 7</div>
+      <h3>ScanNet最終評価</h3>
+      <p>未使用800画像で、確定済み条件を一度だけ評価。</p>
+      <div class="tag">待機中</div>
+    </article>
+  </section>
+
+  <h2>専用9ch UNetへの入力</h2>
+  <section class="channels">
+    <div class="channel"><strong>4ch</strong>RGB VAE latent</div>
+    <div class="channel"><strong>4ch</strong>Pre-depth VAE latent</div>
+    <div class="channel"><strong>1ch</strong>Valid mask</div>
+  </section>
+
+  <h2>比較する3条件</h2>
+  <div class="paths">
+    <b>unconditioned</b>（条件なし） →
+    <b>crop pre-depth</b>（従来方式） →
+    <b>regressor pre-depth</b>（今回方式）
+    <div class="note">画像、seed、512px処理解像度、9chモデル、評価コードを統一します。</div>
+  </div>
+
+  <h2>主な成果物</h2>
+  <div class="paths">
+    Regressor: <code>output/object_depth_regressor_v3/</code><br>
+    Pre-depth: <code>D:/lotus/data/regressor_predepth_v4_512_compact/hypersim_train/</code><br>
+    9ch model: <code>output/train-lotus-d-regressor-predepth-9ch/</code><br>
+    評価結果: <code>output/eval_three_conditions_nyuv2/</code>
+  </div>
+</main>
+</body>
+</html>
