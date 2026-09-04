@@ -51,6 +51,18 @@ from eval_object_oracle_ceiling import bbox_instance_masks
 from eval_regressor_predepth_nyuv2 import list_nyu_pairs
 from pipeline import LotusDPipeline
 from utils.object_detection_cache import load_detections
+from utils.lora_eval_loader import add_lora_args, apply_lora, run_tag_for
+from utils.object_prompt import (
+    build_class_prompt,
+    class_names,
+    class_token_bias_inputs,
+    class_token_spans,
+)
+from utils.object_spatial_attention import (
+    _attention_grid_size,
+    build_class_token_spatial_bias,
+    class_token_cross_attention_kwargs,
+)
 
 
 def parse_args():
@@ -68,6 +80,17 @@ def parse_args():
     p.add_argument("--detection_score_thr", type=float, default=0.5)
     p.add_argument("--max_images", type=int, default=200)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument(
+        "--class_token_spatial_bias",
+        action="store_true",
+        help=(
+            "Apply option C's bias while measuring. Criterion (d) requires this OFF - the "
+            "bias would dominate the lift and hide whether training grew the binding. Its "
+            "use here is to prove the bias reaches attention at all: with it on, lift "
+            "should jump far above the 1.079 baseline."
+        ),
+    )
+    add_lora_args(p)
     return p.parse_args()
 
 
@@ -78,7 +101,10 @@ class CaptureProcessor:
         self.store, self.name = store, name
 
     def __call__(self, attn, hidden_states, encoder_hidden_states=None,
-                 attention_mask=None, temb=None, **kwargs):
+                 attention_mask=None, temb=None,
+                 class_token_bbox=None, class_token_index=None, class_token_mask=None,
+                 class_token_num_text_tokens=None,
+                 object_spatial_ref_height=None, object_spatial_ref_width=None, **kwargs):
         residual = hidden_states
         inp_ndim = hidden_states.ndim
         if inp_ndim == 4:
@@ -97,6 +123,26 @@ class CaptureProcessor:
         key = attn.head_to_batch_dim(key)
         value = attn.head_to_batch_dim(value)
 
+        if encoder_hidden_states is not None and class_token_bbox is not None:
+            # _attention_grid_size is the same routine ObjectSpatialAttnProcessor uses, so
+            # the bias measured here lands on the grid the UNet actually sees. Reproducing
+            # its arithmetic locally would be one more place for the two to drift apart.
+            grid = _attention_grid_size(
+                hidden_states, hidden_states.ndim, None, None,
+                object_spatial_ref_height, object_spatial_ref_width,
+            )
+            bias = build_class_token_spatial_bias(
+                class_token_bbox.to(query.dtype), class_token_index, class_token_mask,
+                grid[0], grid[1],
+                class_token_num_text_tokens or encoder_hidden_states.shape[1],
+            ) if grid else None
+            if bias is not None:
+                bias = bias.to(device=query.device, dtype=query.dtype)
+                bias = bias.expand(-1, attn.heads, -1, -1).reshape(
+                    -1, bias.shape[2], bias.shape[3]
+                )
+                attention_mask = bias if attention_mask is None else attention_mask + bias
+
         probs = attn.get_attention_scores(query, key, attention_mask)
         if encoder_hidden_states is not None:
             # (batch*heads, HW, 77) -> mean over heads
@@ -114,22 +160,6 @@ class CaptureProcessor:
         return hidden_states / attn.rescale_output_factor
 
 
-def token_spans(tokenizer, prompt, names):
-    """Token positions (in the padded sequence) spelling each class name."""
-    ids = tokenizer(prompt, padding="max_length", max_length=tokenizer.model_max_length,
-                    truncation=True, return_tensors="pt").input_ids[0].tolist()
-    spans = {}
-    for n in names:
-        sub = tokenizer(n, add_special_tokens=False).input_ids
-        if not sub:
-            continue
-        for i in range(len(ids) - len(sub) + 1):
-            if ids[i:i + len(sub)] == sub:
-                spans[n] = list(range(i, i + len(sub)))
-                break
-    return spans
-
-
 def main():
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     args = parse_args()
@@ -142,6 +172,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pipe = LotusDPipeline.from_pretrained(args.core_model, torch_dtype=torch.float32).to(device)
     pipe.set_progress_bar_config(disable=True)
+    apply_lora(pipe, args.lora_path)
 
     store = {}
     procs = {}
@@ -156,13 +187,15 @@ def main():
 
     for rgb_path, _ in tqdm(pairs, desc="cross_attn"):
         dets = [d for d in load_detections(rgb_path, detail_root) if d.score >= args.detection_score_thr]
-        classes = sorted({d.class_name for d in dets})
+        # same builder the training loop uses, so the prompt measured here is the prompt
+        # the model was conditioned on
+        classes = class_names(dets, args.detection_score_thr)
         if len(classes) < 1:
             continue
         rgb_np = np.array(Image.open(rgb_path).convert("RGB"))
         h, w = rgb_np.shape[:2]
-        prompt = ", ".join(classes)
-        spans = token_spans(pipe.tokenizer, prompt, classes)
+        prompt = build_class_prompt(dets, args.detection_score_thr)
+        spans = class_token_spans(pipe.tokenizer, prompt, classes)
         if not spans:
             continue
 
@@ -170,13 +203,29 @@ def main():
         image = (image / 127.5 - 1.0).to(device)
         task_emb = torch.tensor([1, 0], device=device).float().unsqueeze(0)
         task_emb = torch.cat([torch.sin(task_emb), torch.cos(task_emb)], dim=-1)
+        ca_kwargs = None
+        if args.class_token_spatial_bias:
+            bb, ti, tm, _ = class_token_bias_inputs(dets, pipe.tokenizer, h, w,
+                                                    args.detection_score_thr)
+            ca_kwargs = class_token_cross_attention_kwargs(
+                torch.from_numpy(bb).unsqueeze(0).to(device),
+                torch.from_numpy(ti).unsqueeze(0).to(device),
+                torch.from_numpy(tm).unsqueeze(0).to(device),
+                # width comes from the runtime sequence (see the helper); the grid hint is
+                # used only as an aspect ratio - _attention_grid_size normalises it against
+                # the sequence length - so the raw image dimensions serve, and the
+                # pipeline's resize arithmetic does not need reproducing here
+                None, h, w,
+            ) or None
+
         store.clear()
         with torch.no_grad(), (nullcontext() if device.type == "mps"
                                else torch.autocast(device_type=device.type)):
             pipe(rgb_in=image, prompt=prompt, num_inference_steps=1,
                  generator=torch.Generator(device=device).manual_seed(args.seed),
                  output_type="np", timesteps=[args.timestep], task_emb=task_emb,
-                 processing_res=args.processing_res, match_input_res=True)
+                 processing_res=args.processing_res, match_input_res=True,
+                 cross_attention_kwargs=ca_kwargs)
         if not store:
             continue
 
@@ -223,6 +272,8 @@ def main():
             lifts["shifted"].append(float(a[np.roll(own, (dy, dx), axis=(0, 1))].mean()))
 
     summary = {"n_images": len(pairs), "n_tokens": n_tok,
+               "lora_path": args.lora_path, "run_tag": run_tag_for(args),
+               "class_token_spatial_bias": bool(args.class_token_spatial_bias),
                "lift": {k: {"mean": float(np.mean(v)), "median": float(np.median(v)),
                             "n": len(v)} for k, v in lifts.items() if v}}
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")

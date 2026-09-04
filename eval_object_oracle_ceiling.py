@@ -160,7 +160,8 @@ def load_or_build_pred(rgb_path, rgb_dir, cache_dir, pipe, rgb_np, args, generat
     pred = predict_disparity(pipe, rgb_np, args.timestep, args.processing_res, generator)
     path.parent.mkdir(parents=True, exist_ok=True)
     np.save(path, pred.astype(np.float16))
-    return pred.astype(np.float64)
+    # match the cached path's precision, so a cold run and a warm run agree
+    return pred.astype(np.float16).astype(np.float64)
 
 
 def load_or_build_masks(rgb_path, rgb_dir, cache_dir, yolo, rgb_np, score_thr):

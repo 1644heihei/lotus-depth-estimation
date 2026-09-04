@@ -60,6 +60,8 @@ from eval_object_oracle_ceiling import _cache_path, align_to_gt, score
 from eval_regressor_predepth_nyuv2 import eigen_valid_mask, list_nyu_pairs
 from pipeline import LotusDPipeline
 from utils.object_detection_cache import load_detections
+from utils.lora_eval_loader import add_lora_args, apply_lora, run_tag_for
+from utils.object_prompt import build_class_prompt
 
 VARIANTS = ["empty", "classes", "shuffled", "generic", "classes_pos", "classes_wrongpos"]
 
@@ -83,7 +85,20 @@ def parse_args():
     p.add_argument("--canny", type=int, nargs=2, default=(50, 150))
     p.add_argument("--half_precision", action="store_true")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument(
+        "--variants",
+        type=str,
+        nargs="+",
+        default=VARIANTS,
+        choices=VARIANTS,
+        help=(
+            "Which prompts to score. classes_pos / classes_wrongpos test option A, which "
+            "the plan rejected - right and wrong positions were indistinguishable - so "
+            "trained-model runs skip them and save 654 forward passes each."
+        ),
+    )
     p.add_argument("--max_images", type=int, default=0)
+    add_lora_args(p)
     return p.parse_args()
 
 
@@ -133,8 +148,10 @@ def main():
     names, named_pos, named_wrongpos = [], [], []
     for rgb_path, _ in pairs:
         dets = [d for d in load_detections(rgb_path, detail_root) if d.score >= args.detection_score_thr]
-        uniq = sorted({d.class_name for d in dets})
-        names.append(", ".join(uniq))
+        # via utils.object_prompt so training builds the byte-identical string; a model
+        # trained on "chair, sink" and evaluated on "a chair, a sink" is being tested on a
+        # condition it never saw, and that failure would look like the idea not working
+        names.append(build_class_prompt(dets, args.detection_score_thr))
         ih, iw = Image.open(rgb_path).size[1], Image.open(rgb_path).size[0]
         named_pos.append(", ".join(phrase(d, ih, iw) for d in dets))
         # Same names, each given a cell that is NOT its own. Permuting cells among the
@@ -168,10 +185,14 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pipe = LotusDPipeline.from_pretrained(args.core_model, torch_dtype=dtype).to(device)
     pipe.set_progress_bar_config(disable=True)
+    apply_lora(pipe, args.lora_path)
+    tag = run_tag_for(args)
+    logging.info("Weights: %s   cache tag: %s", args.lora_path or args.core_model, tag)
 
     thresholds = np.linspace(5.0, 25.0, 11)
     weights = thresholds / thresholds.sum()
-    acc = {v: {"absrel": [], "d1": [], "bf1": [], "on": [0, 0], "off": [0, 0]} for v in VARIANTS}
+    variants = [v for v in VARIANTS if v in set(args.variants)]  # keep VARIANTS' order
+    acc = {v: {"absrel": [], "d1": [], "bf1": [], "on": [0, 0], "off": [0, 0]} for v in variants}
 
     for idx, (rgb_path, depth_path) in enumerate(tqdm(pairs, desc="prompts")):
         gt = np.array(Image.open(depth_path)).astype(np.float64) / 1000.0
@@ -185,11 +206,14 @@ def main():
         gt_d = discontinuities(gt, valid, args.t)
         gt_on, gt_off = gt_d & edge, gt_d & ~edge
 
-        prompts = {"empty": "", "classes": names[idx],
-                   "shuffled": shuffled[idx], "generic": args.generic_prompt,
-                   "classes_pos": named_pos[idx], "classes_wrongpos": named_wrongpos[idx]}
+        all_prompts = {"empty": "", "classes": names[idx],
+                       "shuffled": shuffled[idx], "generic": args.generic_prompt,
+                       "classes_pos": named_pos[idx], "classes_wrongpos": named_wrongpos[idx]}
+        prompts = {v: all_prompts[v] for v in variants}
         for v, prompt in prompts.items():
-            cache = Path(args.pred_cache_dir) / f"res{args.processing_res}" / v
+            # tag first: predictions from different weights must never share a directory,
+            # or two runs read each other's outputs and come out looking identical
+            cache = Path(args.pred_cache_dir) / f"res{args.processing_res}" / tag / v
             cp = _cache_path(rgb_path, rgb_dir, cache, "_pred.npy")
             if cp.is_file():
                 pred = np.load(cp).astype(np.float64)
@@ -198,7 +222,10 @@ def main():
                 pred = predict(pipe, rgb_np, prompt, args.timestep, args.processing_res, g)
                 cp.parent.mkdir(parents=True, exist_ok=True)
                 np.save(cp, pred.astype(np.float16))
-                pred = pred.astype(np.float64)
+                # score the fp16 round-trip, not the fp32 original: otherwise the run that
+                # populates the cache is scored at a different precision from every run
+                # that reads it, and results silently depend on whether the cache was warm
+                pred = pred.astype(np.float16).astype(np.float64)
             base = align_to_gt(pred, gt, valid)
             if base is None:
                 continue
@@ -217,9 +244,10 @@ def main():
             acc[v]["off"][0] += int((gt_off & lo_d).sum())
             acc[v]["off"][1] += int(gt_off.sum())
 
-    summary = {"n_images": len(acc["empty"]["absrel"]), "images_with_names": n_named,
-               "generic_prompt": args.generic_prompt, "variants": {}}
-    for v in VARIANTS:
+    summary = {"n_images": len(acc[variants[0]]["absrel"]), "images_with_names": n_named,
+               "generic_prompt": args.generic_prompt, "lora_path": args.lora_path,
+               "run_tag": tag, "variants": {}}
+    for v in variants:
         e = acc[v]
         summary["variants"][v] = {
             "abs_rel": float(np.mean(e["absrel"])), "delta1": float(np.mean(e["d1"])),
@@ -236,7 +264,7 @@ def main():
     print(f"\n{'prompt':<10}{'abs_rel':>10}{'vs empty':>10}{'delta1':>9}"
           f"{'BF1':>9}{'recall ON':>11}{'recall OFF':>12}")
     print("-" * 71)
-    for v in VARIANTS:
+    for v in variants:
         d = V[v]
         da = 100.0 * (b["abs_rel"] - d["abs_rel"]) / b["abs_rel"]
         print(f"{v:<10}{d['abs_rel']:>10.5f}{da:>9.2f}%{d['delta1']:>9.4f}{d['bf1']:>9.4f}"
