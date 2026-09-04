@@ -54,6 +54,7 @@ from diffusers.utils.torch_utils import is_compiled_module
 from pipeline import LotusDPipeline
 from utils.image_utils import concatenate_images, colorize_depth_map
 from utils.hypersim_dataset import get_hypersim_dataset_depth_normal
+from utils.hypersim_holdout import held_out_scenes, is_held_out
 from utils.pre_depth_fusion import (
     downsample_condition_map,
     downsample_valid_mask,
@@ -68,7 +69,9 @@ from utils.object_attention_condition import (
     apply_object_condition_dropout,
     encode_object_attention_condition,
 )
+from utils.class_prompt_batch import ClassPromptCache, log_conditioning_once
 from utils.object_spatial_attention import (
+    class_token_cross_attention_kwargs,
     install_object_spatial_attention_processors,
     object_cross_attention_kwargs,
 )
@@ -666,12 +669,75 @@ def parse_args():
         "--lora_target_blocks",
         type=str,
         default="all",
-        choices=["all", "global", "local", "mid"],
+        choices=["all", "global", "local", "mid", "text"],
         help=(
             "Which UNet depths receive LoRA. The error decomposition says most error is "
             "global/low-frequency, and UNet depth corresponds to spatial scale, so this "
             "tests whether adapting a given depth moves the matching error component. "
-            "global = mid_block + 24x24 blocks; local = the 96x96 blocks; mid = bottleneck only."
+            "global = mid_block + 24x24 blocks; local = the 96x96 blocks; mid = bottleneck "
+            "only; text = cross-attention only, for the class-name conditioning experiment "
+            "(docs/text_conditioning_training_plan.md)."
+        ),
+    )
+    parser.add_argument(
+        "--class_name_prompts",
+        action="store_true",
+        help=(
+            "Condition on the class names detected in each image instead of the empty "
+            "prompt every other run used. Lotus carries Stable Diffusion's CLIP encoder "
+            "and feeds prompt embeddings to the UNet, but was fine-tuned with prompt='' "
+            "throughout, which flattened the text-to-region binding to 1.9%% of its "
+            "strength. See docs/text_conditioning_training_plan.md."
+        ),
+    )
+    parser.add_argument(
+        "--class_name_detections_root",
+        type=str,
+        default=None,
+        help="Detection JSON root for --class_name_prompts (defaults to --object_bbox_detections_root).",
+    )
+    parser.add_argument(
+        "--text_prompt_dropout_p",
+        type=float,
+        default=0.1,
+        help=(
+            "Probability of blanking a sample's prompt. Keeps the model usable without "
+            "text; without it the empty-prompt evaluation measures a condition the model "
+            "was trained away from."
+        ),
+    )
+    parser.add_argument(
+        "--class_token_spatial_bias",
+        action="store_true",
+        help=(
+            "Point each class token's cross-attention at that object's box (option C). "
+            "Hands the model the location instead of waiting for it to be learned."
+        ),
+    )
+    parser.add_argument(
+        "--class_token_bias_dropout_p",
+        type=float,
+        default=0.5,
+        help=(
+            "Probability of dropping the spatial bias for a step. Half by default so the "
+            "model works with and without it - otherwise evaluating with the bias off "
+            "cannot separate 'the binding never formed' from 'the crutch was removed', "
+            "and the plan's criterion (d) stops meaning anything."
+        ),
+    )
+    parser.add_argument(
+        "--max_class_tokens",
+        type=int,
+        default=16,
+        help="Cap on (detection, token) pairs per image. Hypersim averages 1.60, peak 9.",
+    )
+    parser.add_argument(
+        "--hypersim_holdout_split",
+        type=str,
+        default=None,
+        help=(
+            "JSON from utils/hypersim_holdout.py. Frames of the listed scenes are skipped "
+            "so they can serve as an in-domain evaluation set."
         ),
     )
     parser.add_argument(
@@ -1272,6 +1338,11 @@ def main():
             "global": rf".*(mid_block|down_blocks\.2|up_blocks\.1).*\.{proj}$",
             "local": rf".*(down_blocks\.0|up_blocks\.3).*\.{proj}$",
             "mid": rf".*mid_block.*\.{proj}$",
+            # attn2 is cross-attention: to_k/to_v project the text, to_q the image, and
+            # the binding is q.k, so all of them are needed. Leaving attn1, the resnets
+            # and the convolutions untouched is what should keep the fine-tune tax small -
+            # the depth pathway is not being adapted, only how text reaches it.
+            "text": rf".*attn2\.{proj}$",
         }[args.lora_target_blocks]
 
         lora_config = LoraConfig(
@@ -1452,6 +1523,20 @@ def main():
             norm_type=args.norm_type, truncnorm_min=args.truncnorm_min, align_cam_normal=args.align_cam_normal
             )
         with accelerator.main_process_first():
+            if args.hypersim_holdout_split:
+                # Drop every frame of the held-out scenes, not just the ones evaluated on.
+                # Hypersim frames within a scene are the same room from nearby poses, so
+                # leaving the unevaluated frames in would put near-duplicates of the test
+                # set into training and the hold-out would measure memorisation.
+                scenes = held_out_scenes(args.hypersim_holdout_split)
+                before = len(train_hypersim_dataset)
+                train_hypersim_dataset = train_hypersim_dataset.filter(
+                    lambda ex: not is_held_out(ex["image"], scenes)
+                )
+                logger.info(
+                    "Hypersim hold-out: %d scenes excluded, %d -> %d frames",
+                    len(scenes), before, len(train_hypersim_dataset),
+                )
             if args.max_train_samples is not None:
                 train_hypersim_dataset = train_hypersim_dataset.shuffle(seed=args.seed).select(range(args.max_train_samples))
             # Set the training transforms
@@ -1656,6 +1741,33 @@ def main():
             accelerator,
             weight_dtype,
             global_step,
+        )
+
+    conditioning_logged = {"prompt": False, "bias": False}
+    prompt_cache = None
+    if args.class_name_prompts:
+        det_root = args.class_name_detections_root or args.object_bbox_detections_root
+        if not det_root:
+            raise ValueError(
+                "--class_name_prompts needs --class_name_detections_root "
+                "(or --object_bbox_detections_root) pointing at the detection JSONs."
+            )
+        prompt_cache = ClassPromptCache(
+            det_root, tokenizer, args.object_bbox_score_thr, args.max_class_tokens
+        )
+        if args.class_token_spatial_bias:
+            # attn2 needs the bias-aware processor; harmless when the bias is dropped for
+            # a step because the kwargs are simply absent then
+            install_object_spatial_attention_processors(accelerator.unwrap_model(unet))
+        # Read paths off the untransformed dataset: indexing train_dataset_hypersim would
+        # run the preprocessing transform and decode 50 images to obtain 50 strings.
+        n_probe = min(50, len(train_hypersim_dataset))
+        prompt_cache.check_root(train_hypersim_dataset[:n_probe]["image"])
+        logger.info(
+            "Class-name prompts ON  detections=%s  prompt_dropout=%.2f  "
+            "spatial_bias=%s (dropout=%.2f)  max_class_tokens=%d",
+            det_root, args.text_prompt_dropout_p, args.class_token_spatial_bias,
+            args.class_token_bias_dropout_p, args.max_class_tokens,
         )
 
     for epoch in range(first_epoch, args.num_train_epochs):
@@ -1908,20 +2020,44 @@ def main():
                         )
                         unet_input = torch.cat([unet_input, class_map_latents], dim=1)
 
-                # Get the empty text embedding for conditioning
-                prompt = ""
-                text_inputs = tokenizer(
-                    prompt,
-                    padding="do_not_pad",
-                    max_length=tokenizer.model_max_length,
-                    truncation=True,
-                    return_tensors="pt",
-                )
-                text_input_ids = text_inputs.input_ids.to(target_latents.device)
-                text_encoder_hidden_states = text_encoder(text_input_ids, return_dict=False)[0]
-                text_encoder_hidden_states = text_encoder_hidden_states.repeat(bsz, 1, 1)
-                encoder_hidden_states = text_encoder_hidden_states
+                # Text conditioning. Without --class_name_prompts this is the empty prompt
+                # every other run in this repo used; with it, each sample gets the class
+                # names detected in its own image.
                 encoder_attention_mask = None
+                class_bias_inputs = None
+                if args.class_name_prompts:
+                    (
+                        encoder_hidden_states,
+                        encoder_attention_mask,
+                        class_bias_inputs,
+                        prompts,
+                    ) = prompt_cache.encode_batch(
+                        batch["image_pathes"][:bsz_per_task],
+                        bsz,
+                        tokenizer,
+                        text_encoder,
+                        target_latents.device,
+                        prompt_dropout_p=args.text_prompt_dropout_p,
+                        spatial_bias=args.class_token_spatial_bias,
+                        bias_dropout_p=args.class_token_bias_dropout_p,
+                    )
+                    log_conditioning_once(
+                        conditioning_logged, logger, prompts,
+                        encoder_hidden_states, encoder_attention_mask, class_bias_inputs,
+                    )
+                else:
+                    prompt = ""
+                    text_inputs = tokenizer(
+                        prompt,
+                        padding="do_not_pad",
+                        max_length=tokenizer.model_max_length,
+                        truncation=True,
+                        return_tensors="pt",
+                    )
+                    text_input_ids = text_inputs.input_ids.to(target_latents.device)
+                    text_encoder_hidden_states = text_encoder(text_input_ids, return_dict=False)[0]
+                    text_encoder_hidden_states = text_encoder_hidden_states.repeat(bsz, 1, 1)
+                    encoder_hidden_states = text_encoder_hidden_states
                 object_features_for_bias = None
                 object_mask_for_bias = None
                 if object_attention_encoder is not None:
@@ -2003,6 +2139,16 @@ def main():
                         unet_input.shape[-1],
                         enabled=True,
                     ) or None
+
+                if class_bias_inputs is not None:
+                    kw = class_token_cross_attention_kwargs(
+                        *class_bias_inputs,
+                        None,  # width from the runtime sequence; see the padding note above
+                        unet_input.shape[-2],
+                        unet_input.shape[-1],
+                    )
+                    if kw:
+                        cross_attention_kwargs = {**(cross_attention_kwargs or {}), **kw}
 
                 # Predict
                 model_pred = unet(
