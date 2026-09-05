@@ -61,7 +61,11 @@ from eval_regressor_predepth_nyuv2 import eigen_valid_mask, list_nyu_pairs
 from pipeline import LotusDPipeline
 from utils.object_detection_cache import load_detections
 from utils.lora_eval_loader import add_lora_args, apply_lora, run_tag_for
-from utils.object_prompt import build_class_prompt
+from utils.object_prompt import build_class_prompt, class_token_bias_inputs
+from utils.object_spatial_attention import (
+    class_token_cross_attention_kwargs,
+    install_object_spatial_attention_processors,
+)
 
 VARIANTS = ["empty", "classes", "shuffled", "generic", "classes_pos", "classes_wrongpos"]
 
@@ -97,13 +101,21 @@ def parse_args():
             "trained-model runs skip them and save 654 forward passes each."
         ),
     )
+    p.add_argument(
+        "--class_token_spatial_bias",
+        action="store_true",
+        help=(
+            "Apply option C's bias at inference. Required to evaluate T-both as deployed; "
+            "the same adapter is also scored without it to isolate what option B learned."
+        ),
+    )
     p.add_argument("--max_images", type=int, default=0)
     add_lora_args(p)
     return p.parse_args()
 
 
 @torch.no_grad()
-def predict(pipe, rgb_np, prompt, timestep, processing_res, generator):
+def predict(pipe, rgb_np, prompt, timestep, processing_res, generator, cross_kwargs=None):
     device = pipe.device
     image = torch.from_numpy(rgb_np.astype(np.float32)).permute(2, 0, 1).unsqueeze(0)
     image = (image / 127.5 - 1.0).to(device)
@@ -115,6 +127,7 @@ def predict(pipe, rgb_np, prompt, timestep, processing_res, generator):
             rgb_in=image, prompt=prompt, num_inference_steps=1, generator=generator,
             output_type="np", timesteps=[timestep], task_emb=task_emb,
             processing_res=processing_res, match_input_res=True,
+            cross_attention_kwargs=cross_kwargs,
         ).images[0]
     return (out.mean(axis=-1) if out.ndim == 3 else out).astype(np.float32)
 
@@ -186,6 +199,8 @@ def main():
     pipe = LotusDPipeline.from_pretrained(args.core_model, torch_dtype=dtype).to(device)
     pipe.set_progress_bar_config(disable=True)
     apply_lora(pipe, args.lora_path)
+    if args.class_token_spatial_bias:
+        install_object_spatial_attention_processors(pipe.unet)
     tag = run_tag_for(args)
     logging.info("Weights: %s   cache tag: %s", args.lora_path or args.core_model, tag)
 
@@ -210,7 +225,26 @@ def main():
                        "shuffled": shuffled[idx], "generic": args.generic_prompt,
                        "classes_pos": named_pos[idx], "classes_wrongpos": named_wrongpos[idx]}
         prompts = {v: all_prompts[v] for v in variants}
+
+        # The bias points a class token at its own object, so it means something only for
+        # the variant whose prompt actually names this image's objects. Applying it under
+        # shuffled or generic would pair another image's words with these boxes.
+        bias_kwargs = None
+        if args.class_token_spatial_bias:
+            bb, ti, tm, _ = class_token_bias_inputs(
+                [d for d in load_detections(rgb_path, detail_root)
+                 if d.score >= args.detection_score_thr],
+                pipe.tokenizer, h, w, args.detection_score_thr,
+            )
+            bias_kwargs = class_token_cross_attention_kwargs(
+                torch.from_numpy(bb).unsqueeze(0).to(device),
+                torch.from_numpy(ti).unsqueeze(0).to(device),
+                torch.from_numpy(tm).unsqueeze(0).to(device),
+                None, h, w,  # grid hint is an aspect ratio; see the helper
+            ) or None
+
         for v, prompt in prompts.items():
+            ck = bias_kwargs if v == "classes" else None
             # tag first: predictions from different weights must never share a directory,
             # or two runs read each other's outputs and come out looking identical
             cache = Path(args.pred_cache_dir) / f"res{args.processing_res}" / tag / v
@@ -219,7 +253,7 @@ def main():
                 pred = np.load(cp).astype(np.float64)
             else:
                 g = torch.Generator(device=device).manual_seed(args.seed)
-                pred = predict(pipe, rgb_np, prompt, args.timestep, args.processing_res, g)
+                pred = predict(pipe, rgb_np, prompt, args.timestep, args.processing_res, g, ck)
                 cp.parent.mkdir(parents=True, exist_ok=True)
                 np.save(cp, pred.astype(np.float16))
                 # score the fp16 round-trip, not the fp32 original: otherwise the run that
@@ -246,7 +280,8 @@ def main():
 
     summary = {"n_images": len(acc[variants[0]]["absrel"]), "images_with_names": n_named,
                "generic_prompt": args.generic_prompt, "lora_path": args.lora_path,
-               "run_tag": tag, "variants": {}}
+               "run_tag": tag, "class_token_spatial_bias": bool(args.class_token_spatial_bias),
+               "variants": {}}
     for v in variants:
         e = acc[v]
         summary["variants"][v] = {
