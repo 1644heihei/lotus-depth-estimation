@@ -1,5 +1,14 @@
 # 物体境界の方向を閉じる — 上限は本物、しかし物体検出では届かない
 
+> **続報 (2026-09-06)**: 本書の「マスク輪郭が中央値 14.14px ずれている」は不正確だった。
+> 14.14px は**段差が存在しない輪郭画素を含めた**値で、分解すると 42.9%（Hypersim）が
+> 「段差の無い場所を指す輪郭」であり、**段差がある場所ではマスクは 2.00px で
+> Lotus 自身（3.00px）より正確**だった。
+> 結論（物体検出では届かない）は変わらないが、根拠は
+> 「2.00px ずれており、許容が 1.71px」に更新される。
+> 詳細と、鋭化操作そのものの上限 +273% は
+> [`contour_sharpening_findings.md`](contour_sharpening_findings.md) を参照。
+
 実施: 2026-09-03
 スクリプト: `eval_boundary_postproc.py`, `eval_mask_contour_localization.py`, `eval_boundary_f1.py`
 評価: NYUv2 test のうち物体が検出された 522 枚, `processing_res=768`, Eigen crop

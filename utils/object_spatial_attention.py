@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+
 import torch
 import torch.nn.functional as F
 from diffusers.models.attention_processor import Attention, AttnProcessor2_0
+
+logger = logging.getLogger(__name__)
 
 
 def install_object_spatial_attention_processors(unet) -> None:
@@ -245,6 +249,8 @@ def object_cross_attention_kwargs(
 class ObjectSpatialAttnProcessor(AttnProcessor2_0):
     """AttnProcessor2_0 with optional additive object spatial bias."""
 
+    _logged_class_bias = False
+
     def __call__(
         self,
         attn: Attention,
@@ -295,6 +301,16 @@ class ObjectSpatialAttnProcessor(AttnProcessor2_0):
                         object_spatial_num_text_tokens or 0,
                     )
                 if class_token_bbox is not None:
+                    if not ObjectSpatialAttnProcessor._logged_class_bias:
+                        ObjectSpatialAttnProcessor._logged_class_bias = True
+                        # Proof that the bias reaches attention rather than being dropped
+                        # by a processor that was never installed - set_attn_processor has
+                        # to survive accelerate's wrapping, and a silently ignored kwarg
+                        # looks exactly like the conditioning not working.
+                        logger.info(
+                            "[class-token bias] first application: grid=%dx%d  rows=%d",
+                            grid_h, grid_w, int(class_token_mask.sum()),
+                        )
                     class_bias = build_class_token_spatial_bias(
                         class_token_bbox,
                         class_token_index,
