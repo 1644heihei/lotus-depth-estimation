@@ -75,6 +75,15 @@ def parse_args():
                    help="Threshold for 'Lotus already shows a step here', in percent.")
     p.add_argument("--select_px", type=int, default=3)
     p.add_argument("--detection_score_thr", type=float, default=0.5)
+    p.add_argument(
+        "--masks_are_contours",
+        action="store_true",
+        help=(
+            "The cache already holds contour planes rather than region masks "
+            "(build_sam_masks.py --mode automatic). Taking contour_of() of a contour "
+            "would return the outline of the line - two parallel strokes instead of one."
+        ),
+    )
     p.add_argument("--n_controls", type=int, default=3)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--max_images", type=int, default=0)
@@ -135,7 +144,8 @@ def main():
                                        np.empty((h, w, 3), np.uint8), args.detection_score_thr))
         if not seg:
             continue
-        cont = contour_of(np.any(np.stack(seg), axis=0)) & valid
+        plane = np.any(np.stack(seg), axis=0)
+        cont = (plane if args.masks_are_contours else contour_of(plane)) & valid
         if not cont.any():
             continue
 

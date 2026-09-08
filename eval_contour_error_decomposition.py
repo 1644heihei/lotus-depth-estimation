@@ -64,6 +64,11 @@ def parse_args():
         help="A contour pixel counts as marking a real step when one lies within this far.",
     )
     p.add_argument("--detection_score_thr", type=float, default=0.5)
+    p.add_argument(
+        "--masks_are_contours",
+        action="store_true",
+        help="The cache holds contour planes, not region masks (--mode automatic).",
+    )
     p.add_argument("--max_images", type=int, default=300)
     return p.parse_args()
 
@@ -113,7 +118,7 @@ def main():
     near, far, rev, n = [], 0, [], 0
     total_contour = 0
     for gt, valid, seg in tqdm(frames, desc=f"{args.dataset}"):
-        cont = contour_of(seg) & valid
+        cont = (seg if args.masks_are_contours else contour_of(seg)) & valid
         disc = discontinuities(gt, valid, args.t)
         if not cont.any() or not disc.any():
             continue
