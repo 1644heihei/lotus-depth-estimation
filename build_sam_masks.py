@@ -56,7 +56,17 @@ def parse_args():
         default="C:/Users/nihei/lotus-depth-estimation/datasets/eval/depth/nyuv2/nyu_labeled_extracted.tar/test",
     )
     p.add_argument("--detail_artifacts_dir", type=str, default="D:/lotus/data/nyuv2_detail_artifacts/test")
+    p.add_argument("--dataset", choices=["nyuv2", "hypersim"], default="nyuv2")
+    p.add_argument("--hypersim_root", type=str, default="D:/lotus/data/hypersim_processed/train")
     p.add_argument("--out_dir", type=str, default="D:/lotus/data/oracle_cache/sam_seg")
+    p.add_argument(
+        "--union_only",
+        action="store_true",
+        help=(
+            "Store the union of the instance masks as one plane instead of one per object. "
+            "Contour sharpening only ever uses the union, and Hypersim is 59k frames."
+        ),
+    )
     p.add_argument("--model", type=str, default="facebook/sam-vit-huge")
     p.add_argument("--detection_score_thr", type=float, default=0.5)
     p.add_argument("--half_precision", action="store_true")
@@ -96,12 +106,16 @@ def main():
     processor = SamProcessor.from_pretrained(args.model)
     model = SamModel.from_pretrained(args.model, torch_dtype=dtype).to(device).eval()
 
-    pairs = list_nyu_pairs(rgb_dir)
+    if args.dataset == "hypersim":
+        rgb_dir = Path(args.hypersim_root)
+        paths = sorted(rgb_dir.rglob("rgb_*.png"))
+    else:
+        paths = [p for p, _ in list_nyu_pairs(rgb_dir)]
     if args.max_images:
-        pairs = pairs[: args.max_images]
+        paths = paths[: args.max_images]
 
     n_written = n_empty = 0
-    for rgb_path, _ in tqdm(pairs, desc="hqsam"):
+    for rgb_path in tqdm(paths, desc=f"sam[{args.dataset}]"):
         dst = _cache_path(rgb_path, rgb_dir, out_dir, "_seg.npz")
         if dst.is_file() and not args.overwrite:
             continue
@@ -120,6 +134,8 @@ def main():
         m = masks_for(model, processor, image, [d.bbox for d in dets], device, dtype)
         if m.ndim == 2:
             m = m[None]
+        if args.union_only:
+            m = np.any(m, axis=0)[None]
         packed = np.packbits(m.reshape(len(m), -1), axis=-1)
         np.savez_compressed(dst, packed=packed, n=len(m))
         n_written += 1

@@ -70,6 +70,12 @@ from utils.object_attention_condition import (
     encode_object_attention_condition,
 )
 from utils.class_prompt_batch import ClassPromptCache, log_conditioning_once
+from utils.contour_condition import ContourCache
+from utils.expanded_conv_in import (
+    extra_channel_energy,
+    save_conv_in,
+    unfreeze_conv_in,
+)
 from utils.object_spatial_attention import (
     class_token_cross_attention_kwargs,
     install_object_spatial_attention_processors,
@@ -677,6 +683,41 @@ def parse_args():
             "global = mid_block + 24x24 blocks; local = the 96x96 blocks; mid = bottleneck "
             "only; text = cross-attention only, for the class-name conditioning experiment "
             "(docs/text_conditioning_training_plan.md)."
+        ),
+    )
+    parser.add_argument(
+        "--contour_condition",
+        action="store_true",
+        help=(
+            "Feed a contour map to the UNet as extra input channels, encoded through the "
+            "VAE like the RGB. Post-processing with a contour is worth +279.9%% BF1 net of "
+            "control but needs it within 1.71px, which SAM misses by 0.29px; training is "
+            "what could learn to read a contour as approximate. "
+            "See docs/contour_sharpening_findings.md."
+        ),
+    )
+    parser.add_argument(
+        "--contour_mask_root",
+        type=str,
+        default=None,
+        help="Union-mask cache from build_sam_masks.py --union_only.",
+    )
+    parser.add_argument(
+        "--contour_width",
+        type=int,
+        default=1,
+        help="Thickness of the contour drawn into the channel, in pixels.",
+    )
+    parser.add_argument(
+        "--contour_mode",
+        type=str,
+        default="real",
+        choices=["real", "zero", "shuffled"],
+        help=(
+            "real = this image's contour. zero = an empty channel, which measures whether "
+            "the zero-initialised expansion costs anything on its own. shuffled = another "
+            "image's contour, which separates the position information from the mere "
+            "presence of a channel."
         ),
     )
     parser.add_argument(
@@ -1302,6 +1343,11 @@ def main():
         else:
             extra = 5
         expand_unet_conv_in(unet, extra_in_channels=extra, zero_init=True)
+    elif args.contour_condition:
+        # 12ch: rgb(4) + zeros(4) + contour VAE(4). zero_init means step 0 reproduces the
+        # pretrained model exactly, so the run does not start by paying a tax.
+        expand_unet_conv_in(unet, extra_in_channels=4, zero_init=True)
+        logger.info("conv_in expanded by 4 for the contour channel (zero-initialised)")
 
     object_attention_encoder = None
     if args.enable_object_attention:
@@ -1365,6 +1411,14 @@ def main():
         for p in unet.parameters():
             if p.requires_grad:
                 p.data = p.data.float()
+
+        if args.contour_condition:
+            # add_adapter above targets attention projections and leaves everything else
+            # frozen, including the input slices expand_unet_conv_in just created at zero.
+            # Left that way the contour channel is multiplied by zero on every step and the
+            # run silently trains without it - which is exactly what the first attempt did.
+            n_conv = unfreeze_conv_in(unet, 8)
+            logger.info("conv_in unfrozen for the contour channel: %d params", n_conv)
         logger.info(
             "LoRA enabled: rank=%d alpha=%d, backbone frozen.",
             args.lora_rank,
@@ -1397,6 +1451,10 @@ def main():
                         )
                     elif args.use_lora and isinstance(unwrapped, UNet2DConditionModel):
                         unwrapped.save_lora_adapter(os.path.join(output_dir, "unet_lora"))
+                        if args.contour_condition:
+                            # save_lora_adapter writes attention weights only; without this
+                            # the trained conv_in never leaves the process
+                            save_conv_in(unwrapped, os.path.join(output_dir, "unet_lora"))
                     else:
                         unwrapped.save_pretrained(os.path.join(output_dir, "unet"))
                     weights.pop()
@@ -1743,7 +1801,19 @@ def main():
             global_step,
         )
 
-    conditioning_logged = {"prompt": False, "bias": False}
+    conditioning_logged = {"prompt": False, "bias": False, "contour": False}
+    contour_cache = None
+    if args.contour_condition:
+        if not args.contour_mask_root:
+            raise ValueError("--contour_condition needs --contour_mask_root")
+        contour_cache = ContourCache(args.contour_mask_root, args.contour_width)
+        if args.contour_mode != "zero":
+            n_probe = min(50, len(train_hypersim_dataset))
+            contour_cache.check_root(
+                train_hypersim_dataset[:n_probe]["image"], args.train_data_dir_hypersim, None
+            )
+        logger.info("Contour condition ON  masks=%s  width=%dpx  mode=%s",
+                    args.contour_mask_root, args.contour_width, args.contour_mode)
     prompt_cache = None
     if args.class_name_prompts:
         det_root = args.class_name_detections_root or args.object_bbox_detections_root
@@ -1876,6 +1946,31 @@ def main():
 
                 # Get the unet input
                 unet_input = rgb_latents
+                if contour_cache is not None:
+                    paths = list(batch["image_pathes"][:bsz_per_task])
+                    shuf = None
+                    if args.contour_mode == "shuffled":
+                        # rotate by one: every sample gets a neighbour's contour, so the
+                        # channel is just as full and describes the wrong scene
+                        shuf = paths[1:] + paths[:1]
+                    elif args.contour_mode == "zero":
+                        shuf = []
+                    cmap = contour_cache.batch(
+                        paths, args.train_data_dir_hypersim, rgb_latents.shape[0],
+                        (batch["pixel_values"].shape[-2], batch["pixel_values"].shape[-1]),
+                        rgb_latents.device, weight_dtype, shuffle=shuf,
+                    )
+                    contour_latents = encode_pre_depth_latents(vae, cmap.repeat(1, 3, 1, 1))
+                    unet_input = torch.cat([unet_input, contour_latents], dim=1)
+                    if not conditioning_logged["contour"]:
+                        conditioning_logged["contour"] = True
+                        logger.info(
+                            "[contour sample] mode=%s  map=%s  on-contour frac/sample=%s  "
+                            "latents=%s",
+                            args.contour_mode, tuple(cmap.shape),
+                            [round(float((cmap[i] > 0).float().mean()), 4) for i in range(min(4, len(cmap)))],
+                            tuple(contour_latents.shape),
+                        )
                 if args.enable_pre_depth_fusion:
                     class_map_anno = None
                     size_w_anno = None
@@ -2299,6 +2394,20 @@ def main():
             # no LoRA-aware code, matching official Lotus exactly (base weights are
             # untouched since the backbone was frozen for the whole run).
             unet.save_lora_adapter(os.path.join(args.output_dir, "unet_lora"))
+            if args.contour_condition:
+                save_conv_in(unet, os.path.join(args.output_dir, "unet_lora"))
+                # Verify the conditioning could act at all. Zero here means the extra
+                # channels never left their initialisation, so whatever was fed through
+                # them had no influence and the run measured nothing - a failure that
+                # neither the loss nor the input logging reveals.
+                e = extra_channel_energy(unet, 4)
+                logger.info("contour conv_in extra-channel |w|max = %.4e", e)
+                if e == 0.0:
+                    raise RuntimeError(
+                        "The contour channel's conv_in weights are still exactly zero: "
+                        "training never used the contour. Check that unfreeze_conv_in ran "
+                        "after add_adapter."
+                    )
             unet.unload_lora()
 
         pipeline = LotusDPipeline.from_pretrained(

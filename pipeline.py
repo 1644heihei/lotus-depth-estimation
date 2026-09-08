@@ -1045,6 +1045,7 @@ class LotusDPipeline(DirectDiffusionPipeline):
         rgb_in: Optional[torch.FloatTensor] = None,
         task_emb: Optional[torch.FloatTensor] = None,
         pre_depth: Optional[torch.FloatTensor] = None,
+        contour: Optional[torch.FloatTensor] = None,
         pre_depth_valid_mask: Optional[torch.FloatTensor] = None,
         class_map: Optional[torch.FloatTensor] = None,
         size_w: Optional[torch.FloatTensor] = None,
@@ -1287,6 +1288,23 @@ class LotusDPipeline(DirectDiffusionPipeline):
                     latent_model_input = torch.cat(
                         [latent_model_input, class_lat, size_w_lat, size_h_lat], dim=1
                     )
+            elif extra_channels == 4:
+                # Contour conditioning (docs/contour_sharpening_findings.md): a contour
+                # map encoded through the same VAE as the RGB. Passing nothing here would
+                # silently fall through to zeros below and evaluate a contour-conditioned
+                # model as if it had no contour, which looks like the conditioning failing.
+                if contour is None:
+                    contour = torch.full(
+                        (rgb_in.shape[0], 1, rgb_in.shape[-2], rgb_in.shape[-1]),
+                        -1.0, device=device, dtype=rgb_in.dtype,
+                    )
+                else:
+                    contour = contour.to(device=device, dtype=rgb_in.dtype)
+                    if contour.shape[-2:] != rgb_in.shape[-2:]:
+                        contour = F.interpolate(contour, size=rgb_in.shape[-2:], mode="nearest")
+                latent_model_input = torch.cat(
+                    [rgb_latents, encode_pre_depth_latents(self.vae, contour)], dim=1
+                )
             else:
                 # Fallback for unexpected channel counts: append zeros.
                 zeros = torch.zeros(
