@@ -76,6 +76,17 @@ def parse_args():
     p.add_argument("--select_px", type=int, default=3)
     p.add_argument("--detection_score_thr", type=float, default=0.5)
     p.add_argument(
+        "--require_masks_in",
+        type=str,
+        default=None,
+        help=(
+            "Skip frames that have no mask in this other cache. Object masks exist for 521 "
+            "of 654 NYUv2 frames while whole-scene contours exist for all of them, so "
+            "comparing the two without this compares different populations - their "
+            "baselines already differ, 0.0726 against 0.0693."
+        ),
+    )
+    p.add_argument(
         "--masks_are_contours",
         action="store_true",
         help=(
@@ -140,6 +151,12 @@ def main():
         base = align_to_gt(np.load(pp).astype(np.float64), gt, valid)
         if base is None:
             continue
+        if args.require_masks_in:
+            other = list(load_or_build_masks(
+                rgb_path, rgb_dir, Path(args.require_masks_in), None,
+                np.empty((h, w, 3), np.uint8), args.detection_score_thr))
+            if not other or not np.any(np.stack(other)):
+                continue
         seg = list(load_or_build_masks(rgb_path, rgb_dir, Path(args.mask_cache_dir), None,
                                        np.empty((h, w, 3), np.uint8), args.detection_score_thr))
         if not seg:
