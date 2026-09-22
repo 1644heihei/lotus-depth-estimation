@@ -48,9 +48,10 @@ if str(_ROOT) not in sys.path:
 
 from eval_boundary_f1 import boundary_f1
 from eval_mask_contour_localization import discontinuities
-from eval_object_oracle_ceiling import _cache_path, align_to_gt, load_or_build_masks, score
+from eval_object_oracle_ceiling import _cache_path, load_or_build_masks, score
 from eval_perfect_contour_ceiling import propagate_labels, refill_from_own_side
 from eval_regressor_predepth_nyuv2 import eigen_valid_mask, list_nyu_pairs
+from utils.align_space import add_align_space_arg, get_aligner
 
 VARIANTS = ["baseline", "yolo", "yolo_ctrl", "yolo_selected", "perfect"]
 
@@ -98,6 +99,7 @@ def parse_args():
     p.add_argument("--n_controls", type=int, default=3)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--max_images", type=int, default=0)
+    add_align_space_arg(p)
     return p.parse_args()
 
 
@@ -118,6 +120,7 @@ def sharpen(base, contour, valid, ker, band_px, fill_radius):
 
 def main():
     args = parse_args()
+    align = get_aligner(args.align_space)
     rng = np.random.default_rng(args.seed)
     rgb_dir = Path(args.rgb_dir)
     pred_cache = Path(args.pred_cache_dir) / f"res{args.processing_res}"
@@ -148,7 +151,7 @@ def main():
         pp = _cache_path(rgb_path, rgb_dir, pred_cache, "_pred.npy")
         if not pp.is_file():
             continue
-        base = align_to_gt(np.load(pp).astype(np.float64), gt, valid)
+        base = align(np.load(pp).astype(np.float64), gt, valid)
         if base is None:
             continue
         if args.require_masks_in:
