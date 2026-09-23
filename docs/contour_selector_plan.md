@@ -1,5 +1,7 @@
 # 輪郭選別器 — 実装計画
 
+**実施済。結果は [`contour_selector_results.md`](contour_selector_results.md) ── 生の BF1 増分 +12.49%、成功基準 +10% を超えた。**
+
 作成: 2026-09-23
 前提: [`marigold_v2_transfer_results.md`](marigold_v2_transfer_results.md) §4
 
