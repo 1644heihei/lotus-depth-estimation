@@ -136,6 +136,7 @@ def main():
     sel_k = np.ones((2 * args.select_px + 1, 2 * args.select_px + 1), np.uint8)
     bf1 = {v: [] for v in VARIANTS}
     ar = {v: [] for v in VARIANTS}
+    d1 = {v: [] for v in VARIANTS}
     kept = []
 
     def weighted(c):
@@ -192,7 +193,9 @@ def main():
 
         for name, d in variants.items():
             bf1[name].append(weighted(boundary_f1(d, gt, valid, th)))
-            ar[name].append(score(d, gt, valid)[0])
+            _ar, _d1 = score(d, gt, valid)
+            ar[name].append(_ar)
+            d1[name].append(_d1)
 
     n = len(bf1["baseline"])
     summary = {"n_images": n, "fill_radius": args.fill_radius, "band_px": args.band_px,
@@ -200,7 +203,8 @@ def main():
                "variants": {}}
     for v in VARIANTS:
         summary["variants"][v] = {"bf1": float(np.nanmean(bf1[v])),
-                                  "abs_rel": float(np.mean(ar[v]))}
+                                  "abs_rel": float(np.mean(ar[v])),
+                        "delta1": float(np.mean(d1[v]))}
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     V = summary["variants"]

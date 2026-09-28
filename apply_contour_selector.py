@@ -50,6 +50,16 @@ def parse_args():
     p.add_argument("--pred_cache_dir", type=str, default="D:/lotus/data/marigold_v2_pred/res640")
     p.add_argument("--mask_cache_dir", type=str, default="D:/lotus/data/oracle_cache/sam_auto48")
     p.add_argument("--out_dir", type=str, required=True)
+    p.add_argument(
+        "--pred_space",
+        choices=["log", "disparity"],
+        default="log",
+        help="What the cached prediction holds. 'log' is Marigold V2's affine-invariant log "
+             "depth, fed as-is. 'disparity' is Lotus's, converted with -log(d) first: "
+             "disparity rises as depth falls, so feeding it raw hands the selector an "
+             "inverted signal, and -log(d) is log depth up to an affine the per-image "
+             "standardisation removes anyway.",
+    )
     p.add_argument("--retention", type=float, default=0.06)
     p.add_argument("--min_component", type=int, default=0,
                    help="Drop kept components smaller than this. 0 disables; measured worse.")
@@ -94,6 +104,8 @@ def main():
                 continue
 
             pred = np.load(_cache_path(rgb_path, rgb_dir, pred_dir, "_pred.npy")).astype(np.float32)
+            if args.pred_space == "disparity":
+                pred = -np.log(np.clip(pred, 1e-3, None))       # -> log depth up to affine
             pred = (pred - pred.mean()) / (pred.std() + 1e-6)   # as in training
             rgb = np.asarray(Image.open(rgb_path).convert("RGB"), np.float32) / 127.5 - 1.0
             x = np.concatenate([rgb.transpose(2, 0, 1), pred[None],
@@ -120,6 +132,7 @@ def main():
                 pos_n += int(pos.sum()); cont_n += int(contour.sum())
 
     summary = {"checkpoint": args.checkpoint, "epoch": ck["epoch"],
+               "pred_space": args.pred_space,
                "val_precision": ck["val_precision"], "n_images": len(keep_frac),
                "retention": float(np.mean(keep_frac)), "min_component": args.min_component}
     if args.report_precision and sel_n:
