@@ -52,6 +52,7 @@ from eval_object_oracle_ceiling import _cache_path, load_or_build_masks, score
 from eval_perfect_contour_ceiling import propagate_labels, refill_from_own_side
 from eval_regressor_predepth_nyuv2 import eigen_valid_mask, list_nyu_pairs
 from utils.align_space import add_align_space_arg, get_aligner
+from utils.eval_frames import add_dataset_args, list_frames, valid_mask
 
 VARIANTS = ["baseline", "yolo", "yolo_ctrl", "yolo_selected", "perfect"]
 
@@ -100,6 +101,7 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--max_images", type=int, default=0)
     add_align_space_arg(p)
+    add_dataset_args(p)
     return p.parse_args()
 
 
@@ -126,7 +128,7 @@ def main():
     pred_cache = Path(args.pred_cache_dir) / f"res{args.processing_res}"
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    pairs = list_nyu_pairs(rgb_dir)
+    pairs = list_frames(args)
     if args.max_images:
         pairs = pairs[: args.max_images]
 
@@ -146,7 +148,7 @@ def main():
     for rgb_path, depth_path in tqdm(pairs, desc="yolo_sharpen"):
         gt = np.array(Image.open(depth_path)).astype(np.float64) / 1000.0
         h, w = gt.shape
-        valid = np.isfinite(gt) & (gt > 1e-3) & (gt < 10.0) & eigen_valid_mask(h, w)
+        valid = valid_mask(args.dataset, gt)
         if valid.sum() < 100:
             continue
         pp = _cache_path(rgb_path, rgb_dir, pred_cache, "_pred.npy")

@@ -37,7 +37,7 @@ if str(_ROOT) not in sys.path:
 from eval_contour_feature_auc import load_contour
 from eval_mask_contour_localization import discontinuities
 from eval_object_oracle_ceiling import _cache_path
-from eval_regressor_predepth_nyuv2 import eigen_valid_mask, list_nyu_pairs
+from utils.eval_frames import add_dataset_args, list_frames, valid_mask
 from train_contour_selector import UNet
 
 NYU = "C:/Users/nihei/lotus-depth-estimation/datasets/eval/depth/nyuv2/nyu_labeled_extracted.tar"
@@ -67,6 +67,7 @@ def parse_args():
     p.add_argument("--label_px", type=float, default=1.0)
     p.add_argument("--report_precision", action="store_true",
                    help="Also score precision against GT - diagnostic only, never an input.")
+    add_dataset_args(p)
     p.add_argument("--max_images", type=int, default=0)
     return p.parse_args()
 
@@ -83,7 +84,7 @@ def main():
     print(f"checkpoint: {args.checkpoint}  epoch {ck['epoch']}  "
           f"val 適合率 {ck['val_precision']*100:.1f}%")
 
-    pairs = list_nyu_pairs(rgb_dir)
+    pairs = list_frames(args)
     if args.max_images:
         pairs = pairs[: args.max_images]
 
@@ -92,7 +93,7 @@ def main():
         for rgb_path, depth_path in tqdm(pairs, desc="apply"):
             gt = np.array(Image.open(depth_path)).astype(np.float64) / 1000.0
             h, w = gt.shape
-            valid = np.isfinite(gt) & (gt > 1e-3) & (gt < 10.0) & eigen_valid_mask(h, w)
+            valid = valid_mask(args.dataset, gt)
             contour = load_contour(_cache_path(rgb_path, rgb_dir, mask_dir, "_seg.npz"),
                                    h, w) & valid
 
