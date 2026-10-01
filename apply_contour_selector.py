@@ -67,6 +67,13 @@ def parse_args():
     p.add_argument("--label_px", type=float, default=1.0)
     p.add_argument("--report_precision", action="store_true",
                    help="Also score precision against GT - diagnostic only, never an input.")
+    p.add_argument(
+        "--no_sam",
+        action="store_true",
+        help="Match the training ablation: no contour channel, and candidates are every "
+             "valid pixel instead of the SAM contour. --retention must then be given in "
+             "the same ABSOLUTE terms (see docs).",
+    )
     add_dataset_args(p)
     p.add_argument("--max_images", type=int, default=0)
     return p.parse_args()
@@ -79,7 +86,8 @@ def main():
 
     ck = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = UNet(5, ck["args"]["base_ch"]).to(device).eval()
+    in_ch = 4 if args.no_sam else 5
+    model = UNet(in_ch, ck["args"]["base_ch"]).to(device).eval()
     model.load_state_dict(ck["model"])
     print(f"checkpoint: {args.checkpoint}  epoch {ck['epoch']}  "
           f"val 適合率 {ck['val_precision']*100:.1f}%")
@@ -94,8 +102,11 @@ def main():
             gt = np.array(Image.open(depth_path)).astype(np.float64) / 1000.0
             h, w = gt.shape
             valid = valid_mask(args.dataset, gt)
-            contour = load_contour(_cache_path(rgb_path, rgb_dir, mask_dir, "_seg.npz"),
-                                   h, w) & valid
+            if args.no_sam:
+                contour = valid                      # every valid pixel is a candidate
+            else:
+                contour = load_contour(
+                    _cache_path(rgb_path, rgb_dir, mask_dir, "_seg.npz"), h, w) & valid
 
             out_path = _cache_path(rgb_path, rgb_dir, out_dir, "_seg.npz")
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -109,8 +120,10 @@ def main():
                 pred = -np.log(np.clip(pred, 1e-3, None))       # -> log depth up to affine
             pred = (pred - pred.mean()) / (pred.std() + 1e-6)   # as in training
             rgb = np.asarray(Image.open(rgb_path).convert("RGB"), np.float32) / 127.5 - 1.0
-            x = np.concatenate([rgb.transpose(2, 0, 1), pred[None],
-                                contour.astype(np.float32)[None] * 2.0 - 1.0], axis=0)[None]
+            planes = [rgb.transpose(2, 0, 1), pred[None]]
+            if not args.no_sam:
+                planes.append(contour.astype(np.float32)[None] * 2.0 - 1.0)
+            x = np.concatenate(planes, axis=0)[None]
             score = model(torch.from_numpy(x).to(device))[0, 0].float().cpu().numpy()
 
             k = max(int(round(int(contour.sum()) * args.retention)), 1)

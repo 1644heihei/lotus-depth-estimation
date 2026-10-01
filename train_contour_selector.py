@@ -75,6 +75,16 @@ def parse_args():
                         "to what the end-to-end runs used.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--max_images", type=int, default=0)
+    p.add_argument(
+        "--no_sam",
+        action="store_true",
+        help="Ablation: drop the SAM contour channel AND the restriction to SAM contour "
+             "pixels, so the network must find the boundaries itself from RGB and depth. "
+             "This is the setting a depth-only refiner works in (Ramamonjisoa et al., CVPR "
+             "2020 use no segmentation at all), and it tests whether SAM is load-bearing. "
+             "Pair it with a --retention matched in ABSOLUTE pixel count, since candidates "
+             "become every valid pixel rather than the ~9% that lie on a SAM contour.",
+    )
     p.add_argument("--num_workers", type=int, default=0)
     return p.parse_args()
 
@@ -90,10 +100,11 @@ class ContourDataset(torch.utils.data.Dataset):
     a prediction could be aligned to GT) and inference (where it cannot be).
     """
 
-    def __init__(self, pairs, rgb_dir, pred_dir, mask_dir, t, label_px):
+    def __init__(self, pairs, rgb_dir, pred_dir, mask_dir, t, label_px, no_sam=False):
         self.pairs = list(pairs)
         self.rgb_dir, self.pred_dir, self.mask_dir = Path(rgb_dir), Path(pred_dir), Path(mask_dir)
         self.t, self.label_px = t, label_px
+        self.no_sam = bool(no_sam)
 
     def __len__(self):
         return len(self.pairs)
@@ -109,18 +120,23 @@ class ContourDataset(torch.utils.data.Dataset):
         pred = (pred - m) / (s + 1e-6)          # per-image: the affine is unknowable
 
         rgb = np.asarray(Image.open(rgb_path).convert("RGB"), dtype=np.float32) / 127.5 - 1.0
-        contour = load_contour(_cache_path(rgb_path, self.rgb_dir, self.mask_dir, "_seg.npz"),
-                               h, w) & valid
-
         dist = ndi.distance_transform_edt(~discontinuities(gt, valid, self.t))
         label = dist <= self.label_px
 
-        x = np.concatenate([rgb.transpose(2, 0, 1),
-                            pred[None],
-                            contour.astype(np.float32)[None] * 2.0 - 1.0], axis=0)
+        planes = [rgb.transpose(2, 0, 1), pred[None]]
+        if self.no_sam:
+            # Candidates are every valid pixel: the network has to locate the boundaries,
+            # not just judge SAM's. No contour channel either - there is nothing to judge.
+            candidates = valid
+        else:
+            candidates = load_contour(
+                _cache_path(rgb_path, self.rgb_dir, self.mask_dir, "_seg.npz"), h, w) & valid
+            planes.append(candidates.astype(np.float32)[None] * 2.0 - 1.0)
+
+        x = np.concatenate(planes, axis=0)
         return (torch.from_numpy(x),
                 torch.from_numpy(label.astype(np.float32))[None],
-                torch.from_numpy(contour.astype(np.float32))[None])
+                torch.from_numpy(candidates.astype(np.float32))[None])
 
 
 # ---------------------------------------------------------------- model
@@ -221,13 +237,15 @@ def main():
 
     mk = lambda ps, sh: torch.utils.data.DataLoader(
         ContourDataset(ps, rgb_dir, args.pred_cache_dir, args.mask_cache_dir,
-                       args.t, args.label_px),
+                       args.t, args.label_px, no_sam=args.no_sam),
         batch_size=args.batch_size, shuffle=sh, num_workers=args.num_workers)
     dl_tr, dl_va = mk(tr, True), mk(va, False)
 
-    model = UNet(5, args.base_ch).to(device)
+    in_ch = 4 if args.no_sam else 5
+    model = UNet(in_ch, args.base_ch).to(device)
     n_par = sum(p.numel() for p in model.parameters())
-    print(f"UNet base={args.base_ch}  params={n_par/1e6:.2f}M")
+    print(f"UNet in_ch={in_ch} base={args.base_ch}  params={n_par/1e6:.2f}M"
+          f"{'   [no_sam ablation]' if args.no_sam else ''}")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
