@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 import cv2
@@ -52,7 +53,8 @@ from eval_object_oracle_ceiling import _cache_path, load_or_build_masks, score
 from eval_perfect_contour_ceiling import propagate_labels, refill_from_own_side
 from eval_regressor_predepth_nyuv2 import eigen_valid_mask, list_nyu_pairs
 from utils.align_space import add_align_space_arg, get_aligner
-from utils.eval_frames import add_dataset_args, list_frames, valid_mask
+from utils.eval_frames import (add_dataset_args, depth_scale, list_frames,
+                               valid_mask)
 
 VARIANTS = ["baseline", "yolo", "yolo_ctrl", "yolo_selected", "perfect"]
 
@@ -100,6 +102,11 @@ def parse_args():
     p.add_argument("--n_controls", type=int, default=3)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--max_images", type=int, default=0)
+    p.add_argument(
+        "--allow_missing_pred", action="store_true",
+        help="Skip frames whose prediction is not cached instead of failing. Off by "
+             "default: a partial cache scores a subset of the split without saying so, "
+             "and the resulting number gets compared against a full run.")
     add_align_space_arg(p)
     add_dataset_args(p)
     return p.parse_args()
@@ -140,36 +147,55 @@ def main():
     ar = {v: [] for v in VARIANTS}
     d1 = {v: [] for v in VARIANTS}
     kept = []
+    skips = Counter()
 
     def weighted(c):
         ok = np.isfinite(c)
         return float((c[ok] * wt[ok]).sum() / wt[ok].sum()) if ok.any() else np.nan
 
     for rgb_path, depth_path in tqdm(pairs, desc="yolo_sharpen"):
-        gt = np.array(Image.open(depth_path)).astype(np.float64) / 1000.0
+        gt = np.array(Image.open(depth_path)).astype(np.float64) / depth_scale(args.dataset)
         h, w = gt.shape
         valid = valid_mask(args.dataset, gt)
         if valid.sum() < 100:
+            skips["too_few_valid_px"] += 1
             continue
         pp = _cache_path(rgb_path, rgb_dir, pred_cache, "_pred.npy")
         if not pp.is_file():
+            # A partial prediction cache is always a setup error, and skipping it
+            # silently scores a subset of the split: two runs then report different
+            # frame counts and get compared anyway.
+            if not args.allow_missing_pred:
+                raise SystemExit("\n".join([
+                    f"no cached prediction for {rgb_path}",
+                    f"  expected {pp}",
+                    f"  from --pred_cache_dir {args.pred_cache_dir} "
+                    f"+ res{args.processing_res}",
+                    "Run inference for this split, or pass --allow_missing_pred to "
+                    "skip the missing frames on purpose.",
+                ]))
+            skips["pred_missing"] += 1
             continue
         base = align(np.load(pp).astype(np.float64), gt, valid)
         if base is None:
+            skips["alignment_failed"] += 1
             continue
         if args.require_masks_in:
             other = list(load_or_build_masks(
                 rgb_path, rgb_dir, Path(args.require_masks_in), None,
                 np.empty((h, w, 3), np.uint8), args.detection_score_thr))
             if not other or not np.any(np.stack(other)):
+                skips["no_required_mask"] += 1
                 continue
         seg = list(load_or_build_masks(rgb_path, rgb_dir, Path(args.mask_cache_dir), None,
                                        np.empty((h, w, 3), np.uint8), args.detection_score_thr))
         if not seg:
+            skips["no_mask"] += 1
             continue
         plane = np.any(np.stack(seg), axis=0)
         cont = (plane if args.masks_are_contours else contour_of(plane)) & valid
         if not cont.any():
+            skips["empty_contour"] += 1
             continue
 
         # keep contour pixels near a step the model itself already predicts
@@ -200,7 +226,9 @@ def main():
             d1[name].append(_d1)
 
     n = len(bf1["baseline"])
-    summary = {"n_images": n, "fill_radius": args.fill_radius, "band_px": args.band_px,
+    summary = {"n_images": n, "n_frames_listed": len(pairs),
+               "skipped": dict(sorted(skips.items())),
+               "fill_radius": args.fill_radius, "band_px": args.band_px,
                "selected_frac_of_contour": float(np.mean(kept)) if kept else 0.0,
                "variants": {}}
     for v in VARIANTS:
