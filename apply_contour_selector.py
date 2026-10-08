@@ -6,11 +6,10 @@ Output goes in the same packed-bits npz layout the sharpening evaluator already 
 selection with no change to the scoring path - the same path that produced every other
 number in docs/contour_selector_results.md.
 
-Two details have to match training or the selector sees different inputs than it learned on:
-the prediction is standardised per image (Log-stage2's affine-invariant log depth has no
-meaningful level or scale), and retention is set by taking the top share of contour pixels
-per image rather than by a fixed probability, because a global threshold would drift with
-how many contours a scene happens to have.
+The input pipeline is `contour_selector.inputs`, the same module training reads through, so
+the two cannot drift: a mismatch in the per-image standardisation or the prediction space
+would leave the selector running on magnitudes it never saw, and nothing would fail except
+the BF1 at the end.
 
 `--min_component` is off by default: the component-size floor added for the coherence
 constraint measured 3.9 points WORSE than leaving the selector's output alone (+8.61%
@@ -34,11 +33,11 @@ _ROOT = Path(__file__).resolve().parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from eval_contour_feature_auc import load_contour
-from eval_mask_contour_localization import discontinuities
-from eval_object_oracle_ceiling import _cache_path
-from utils.eval_frames import add_dataset_args, list_frames, valid_mask
-from train_contour_selector import UNet
+from contour_selector import (PRED_SPACES, UNet, build_input, cache_path,
+                              contour_labels, in_channels, load_candidates,
+                              load_prediction, top_share_mask)
+from utils.eval_frames import (add_dataset_args, depth_scale, list_frames,
+                               valid_mask)
 
 NYU = "C:/Users/nihei/lotus-depth-estimation/datasets/eval/depth/nyuv2/nyu_labeled_extracted.tar"
 
@@ -52,13 +51,11 @@ def parse_args():
     p.add_argument("--out_dir", type=str, required=True)
     p.add_argument(
         "--pred_space",
-        choices=["log", "disparity"],
+        choices=PRED_SPACES,
         default="log",
-        help="What the cached prediction holds. 'log' is Marigold V2's affine-invariant log "
-             "depth, fed as-is. 'disparity' is Lotus's, converted with -log(d) first: "
-             "disparity rises as depth falls, so feeding it raw hands the selector an "
-             "inverted signal, and -log(d) is log depth up to an affine the per-image "
-             "standardisation removes anyway.",
+        help="What the cached prediction holds. 'log' is Marigold V2's affine-invariant "
+             "log depth, fed as-is. 'disparity' is Lotus's, converted with -log(d) first "
+             "(see contour_selector.inputs.to_log_depth).",
     )
     p.add_argument("--retention", type=float, default=0.06)
     p.add_argument("--min_component", type=int, default=0,
@@ -67,6 +64,11 @@ def parse_args():
     p.add_argument("--label_px", type=float, default=1.0)
     p.add_argument("--report_precision", action="store_true",
                    help="Also score precision against GT - diagnostic only, never an input.")
+    p.add_argument(
+        "--no_rgb",
+        action="store_true",
+        help="Match the training ablation: no RGB channels.",
+    )
     p.add_argument(
         "--no_sam",
         action="store_true",
@@ -79,6 +81,19 @@ def parse_args():
     return p.parse_args()
 
 
+def write_mask(path: Path, keep: np.ndarray) -> None:
+    """The packed-bits layout the sharpening evaluator reads."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, packed=np.packbits(keep.reshape(1, -1), axis=-1), n=1)
+
+
+def drop_small_components(keep: np.ndarray, min_area: int) -> np.ndarray:
+    n, lab, st, _ = cv2.connectedComponentsWithStats(keep.astype(np.uint8), 8)
+    ok = np.zeros(n, bool)
+    ok[1:] = st[1:, cv2.CC_STAT_AREA] >= min_area
+    return ok[lab]
+
+
 def main():
     args = parse_args()
     rgb_dir, out_dir = Path(args.rgb_dir), Path(args.out_dir)
@@ -86,8 +101,8 @@ def main():
 
     ck = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    in_ch = 4 if args.no_sam else 5
-    model = UNet(in_ch, ck["args"]["base_ch"]).to(device).eval()
+    model = UNet(in_channels(no_rgb=args.no_rgb, no_sam=args.no_sam),
+                 ck["args"]["base_ch"]).to(device).eval()
     model.load_state_dict(ck["model"])
     print(f"checkpoint: {args.checkpoint}  epoch {ck['epoch']}  "
           f"val 適合率 {ck['val_precision']*100:.1f}%")
@@ -99,51 +114,33 @@ def main():
     keep_frac, tp, sel_n, pos_n, cont_n = [], 0, 0, 0, 0
     with torch.no_grad():
         for rgb_path, depth_path in tqdm(pairs, desc="apply"):
-            gt = np.array(Image.open(depth_path)).astype(np.float64) / 1000.0
+            gt = np.array(Image.open(depth_path)).astype(np.float64) / depth_scale(args.dataset)
             h, w = gt.shape
             valid = valid_mask(args.dataset, gt)
-            if args.no_sam:
-                contour = valid                      # every valid pixel is a candidate
-            else:
-                contour = load_contour(
-                    _cache_path(rgb_path, rgb_dir, mask_dir, "_seg.npz"), h, w) & valid
+            candidates = load_candidates(rgb_path, rgb_dir, mask_dir, valid,
+                                         no_sam=args.no_sam)
 
-            out_path = _cache_path(rgb_path, rgb_dir, out_dir, "_seg.npz")
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            if not contour.any():
-                np.savez_compressed(out_path, packed=np.packbits(
-                    np.zeros((1, h * w), bool), axis=-1), n=1)
+            out_path = cache_path(rgb_path, rgb_dir, out_dir, "_seg.npz")
+            if not candidates.any():
+                write_mask(out_path, np.zeros((h, w), bool))
                 continue
 
-            pred = np.load(_cache_path(rgb_path, rgb_dir, pred_dir, "_pred.npy")).astype(np.float32)
-            if args.pred_space == "disparity":
-                pred = -np.log(np.clip(pred, 1e-3, None))       # -> log depth up to affine
-            pred = (pred - pred.mean()) / (pred.std() + 1e-6)   # as in training
-            rgb = np.asarray(Image.open(rgb_path).convert("RGB"), np.float32) / 127.5 - 1.0
-            planes = [rgb.transpose(2, 0, 1), pred[None]]
-            if not args.no_sam:
-                planes.append(contour.astype(np.float32)[None] * 2.0 - 1.0)
-            x = np.concatenate(planes, axis=0)[None]
+            pred = load_prediction(rgb_path, rgb_dir, pred_dir, args.pred_space)
+            x = build_input(rgb_path, pred, candidates,
+                            no_rgb=args.no_rgb, no_sam=args.no_sam)[None]
             score = model(torch.from_numpy(x).to(device))[0, 0].float().cpu().numpy()
 
-            k = max(int(round(int(contour.sum()) * args.retention)), 1)
-            thr = np.partition(score[contour], -k)[-k]
-            keep = contour & (score >= thr)
+            keep = top_share_mask(score, candidates, args.retention)
             if args.min_component > 0:
-                n, lab, st, _ = cv2.connectedComponentsWithStats(keep.astype(np.uint8), 8)
-                ok = np.zeros(n, bool)
-                ok[1:] = st[1:, cv2.CC_STAT_AREA] >= args.min_component
-                keep = ok[lab]
+                keep = drop_small_components(keep, args.min_component)
 
-            keep_frac.append(keep.sum() / contour.sum())
-            np.savez_compressed(out_path, packed=np.packbits(keep.reshape(1, -1), axis=-1), n=1)
+            keep_frac.append(keep.sum() / candidates.sum())
+            write_mask(out_path, keep)
 
             if args.report_precision:
-                from scipy import ndimage as ndi
-                pos = contour & (ndi.distance_transform_edt(
-                    ~discontinuities(gt, valid, args.t)) <= args.label_px)
+                pos = candidates & contour_labels(gt, valid, args.t, args.label_px)
                 tp += int((keep & pos).sum()); sel_n += int(keep.sum())
-                pos_n += int(pos.sum()); cont_n += int(contour.sum())
+                pos_n += int(pos.sum()); cont_n += int(candidates.sum())
 
     summary = {"checkpoint": args.checkpoint, "epoch": ck["epoch"],
                "pred_space": args.pred_space,

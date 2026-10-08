@@ -1,0 +1,11 @@
+[
+  {"dataset": "nyuv2",
+   "rgb_dir": "C:/Users/nihei/lotus-depth-estimation/datasets/eval/depth/nyuv2/nyu_labeled_extracted.tar/train",
+   "pred_cache_dir": "D:/lotus/data/marigold_v2_pred_train/res640",
+   "mask_cache_dir": "D:/lotus/data/oracle_cache/sam_auto48_train"},
+  {"dataset": "hypersim10k",
+   "rgb_dir": "D:/lotus/data/hypersim_sel10k_rgb/train",
+   "pred_cache_dir": "D:/lotus/data/marigold_v2_pred_hs10k/res1024",
+   "mask_cache_dir": "D:/lotus/data/oracle_cache/sam_auto48_hs10k",
+   "max_images": 795}
+]
