@@ -13,3 +13,4 @@ yolov8n-seg.pt
 
 
 .claude/settings.local.json
+.golden/
