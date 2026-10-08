@@ -273,7 +273,44 @@ def precision_at_retention(model, loader, device, retention):
         "recall": tp / max(pos, 1),
         "base_rate": pos / max(cont, 1),
         "retention": sel / max(cont, 1),
+        # Raw counts so a pooled score can be rebuilt exactly, rather than averaged from
+        # the ratios - which would silently become a macro-average.
+        "tp": tp, "selected": sel, "positives": pos, "contour": cont,
     }
+
+
+def selection_criteria(source_names):
+    """How to turn the per-source validation precisions into one number to rank epochs.
+
+    A single source has only one answer. Several sources have three, and they disagree:
+
+      pooled  all contour pixels in one sum. This is a micro-average, so a source with
+              more positives counts for more - which is the bug that made the first mixed
+              run pick epoch 28 on a Hypersim-weighted metric while NYUv2 had been
+              overfitting since 17.
+      macro   the mean of the per-source precisions, each source equal regardless of its
+              base rate. The neutral criterion, and the one a mixed run should use.
+      <name>  that source alone, kept as a diagnostic: it answers whether mixing hurt
+              that domain or whether the epoch was simply chosen badly.
+
+    Selecting on a source's validation split is not leakage - every split here is
+    scene-disjoint from the training frames and from the test set, exactly as the
+    single-source run has always done.
+
+    Returns the criteria and the checkpoint filename each one writes. "pooled" keeps the
+    name best.pt so a single-source run is unchanged and every existing command still
+    finds its checkpoint.
+    """
+    crit = {"pooled": lambda m: (sum(r["tp"] for r in m.values())
+                                 / max(sum(r["selected"] for r in m.values()), 1))}
+    ckpt = {"pooled": "best.pt"}
+    if len(source_names) > 1:
+        crit["macro"] = lambda m: sum(r["precision"] for r in m.values()) / len(m)
+        ckpt["macro"] = "best_macro.pt"
+        for name in source_names:
+            crit[name] = lambda m, n=name: m[n]["precision"]
+            ckpt[name] = f"best_{name}.pt"
+    return crit, ckpt
 
 
 def main():
@@ -314,8 +351,13 @@ def main():
 
     cat = lambda ss: ss[0] if len(ss) == 1 else torch.utils.data.ConcatDataset(ss)
     mk = lambda ds, sh: torch.utils.data.DataLoader(
-        cat(ds), batch_size=args.batch_size, shuffle=sh, num_workers=args.num_workers)
-    dl_tr, dl_va = mk(tr_sets, True), mk(va_sets, False)
+        ds, batch_size=args.batch_size, shuffle=sh, num_workers=args.num_workers)
+    dl_tr = mk(cat(tr_sets), True)
+    # Validation stays SPLIT by source. Pooling it weights each source by how many
+    # positives it has, and the sources differ there by 3.8x (Hypersim's contour is
+    # 22.81% true steps, NYUv2's 6.07%), so a pooled precision is a Hypersim score with
+    # a little NYUv2 in it - and the epoch it picks is the best epoch for Hypersim.
+    dl_va = {src["dataset"]: mk(s, False) for src, s in zip(sources, va_sets)}
     if len(sources) > 1:
         print(f"mixed: train {sum(len(s) for s in tr_sets)} / "
               f"val {sum(len(s) for s in va_sets)} over {len(sources)} sources"
@@ -330,7 +372,8 @@ def main():
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
 
-    hist, best = [], -1.0
+    criteria, ckpt_name = selection_criteria(list(dl_va))
+    hist, best = [], {k: -1.0 for k in criteria}
     for ep in range(1, args.epochs + 1):
         model.train()
         tot = nb = 0
@@ -346,30 +389,49 @@ def main():
             scaler.step(opt); scaler.update()
             tot += float(loss); nb += 1
         sched.step()
-        m = precision_at_retention(model, dl_va, device, args.retention)
-        hist.append({"epoch": ep, "loss": tot / max(nb, 1), **m})
-        star = ""
-        if m["precision"] > best:
-            best = m["precision"]
-            torch.save({"model": model.state_dict(), "args": vars(args),
-                        "val_precision": best, "epoch": ep}, out_dir / "best.pt")
-            star = "  <- best"
-        print(f"ep{ep:>3}  loss {tot/max(nb,1):.4f}  val 適合率 {m['precision']*100:5.1f}%  "
-              f"再現率 {m['recall']*100:5.1f}%  (ベース {m['base_rate']*100:.2f}%, "
-              f"残存 {m['retention']*100:.2f}%){star}")
+        per_src = {name: precision_at_retention(model, dl, device, args.retention)
+                   for name, dl in dl_va.items()}
+        scores = {k: fn(per_src) for k, fn in criteria.items()}
+        # The flat keys carry the pooled numbers, so anything that read this history
+        # before per-source validation existed still reads the same field.
+        flat = dict(per_src[list(per_src)[0]]) if len(per_src) == 1 else {
+            "precision": scores["pooled"]}
+        hist.append({"epoch": ep, "loss": tot / max(nb, 1), **flat,
+                     "per_source": per_src, "criteria": scores})
+        stars = []
+        for k, v in scores.items():
+            if v > best[k]:
+                best[k] = v
+                torch.save({"model": model.state_dict(), "args": vars(args),
+                            "val_precision": v, "criterion": k, "per_source": per_src,
+                            "epoch": ep}, out_dir / ckpt_name[k])
+                stars.append(k)
+        line = "  ".join(f"{n} {m['precision']*100:5.1f}%" for n, m in per_src.items())
+        extra = "" if len(scores) == 1 else "  [" + " ".join(
+            f"{k} {v*100:.1f}%" for k, v in scores.items()) + "]"
+        print(f"ep{ep:>3}  loss {tot/max(nb,1):.4f}  val 適合率 {line}{extra}"
+              + (f"  <- best {'/'.join(stars)}" if stars else ""))
 
-    gain = 0.69 * (best * 100 - 37.1)
-    summary = {"history": hist, "best_val_precision": best,
+    headline = best["pooled"]
+    gain = 0.69 * (headline * 100 - 37.1)
+    summary = {"history": hist, "best_val_precision": headline,
+               "best_by_criterion": best,
+               "checkpoints": ckpt_name,
                "predicted_raw_bf1_gain_pct": gain,
                "reference_zero_training_precision": 0.346,
                "breakeven_precision": 0.371, "target_precision": 0.516}
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-    print(f"\n最良の val 適合率 {best*100:.1f}%")
-    print(f"  学習ゼロの閾値 34.6% を超えたか : {'はい' if best > 0.346 else 'いいえ'}")
-    print(f"  損益分岐 37.1% を超えたか       : {'はい' if best > 0.371 else 'いいえ'}")
-    print(f"  目標 51.6% を超えたか           : {'はい' if best > 0.516 else 'いいえ'}")
+    print(f"\n最良の val 適合率 {headline*100:.1f}%")
+    print(f"  学習ゼロの閾値 34.6% を超えたか : {'はい' if headline > 0.346 else 'いいえ'}")
+    print(f"  損益分岐 37.1% を超えたか       : {'はい' if headline > 0.371 else 'いいえ'}")
+    print(f"  目標 51.6% を超えたか           : {'はい' if headline > 0.516 else 'いいえ'}")
     print(f"  換算した生の BF1 増分           : {gain:+.1f}%")
+    if len(criteria) > 1:
+        print("\n基準ごとの最良エポック:")
+        for k in criteria:
+            ep = max(hist, key=lambda r: r["criteria"][k])["epoch"]
+            print(f"  {k:14s} epoch {ep:>3}  {best[k]*100:5.1f}%  -> {ckpt_name[k]}")
     print(f"\nSaved: {out_dir/'best.pt'}, {out_dir/'summary.json'}")
 
 

@@ -29,7 +29,8 @@ if str(_ROOT) not in sys.path:
 
 import torch
 
-from train_contour_selector import ContourDataset, mix_sources
+from train_contour_selector import (ContourDataset, mix_sources,
+                                    selection_criteria)
 
 
 def _write_source(root: Path, scene: str, name: str, h: int, w: int, seed: int):
@@ -226,6 +227,68 @@ class BatchingTest(unittest.TestCase):
         self.assertEqual(tuple(x.shape), (2, 5, 96, 128))
         self.assertEqual(tuple(y.shape), (2, 1, 96, 128))
         self.assertEqual(tuple(c.shape), (2, 1, 96, 128))
+
+
+
+
+class SelectionCriteriaTest(unittest.TestCase):
+    """Why the first mixed run picked the wrong epoch.
+
+    Pooled precision is a micro-average, so the source with more positives dominates it.
+    Hypersim's contour is 22.81% true steps against NYUv2's 6.07%, so a pooled score is
+    close to a Hypersim score - and the epoch it ranks best can be one where NYUv2 has
+    been overfitting for ten epochs.
+    """
+
+    def test_a_single_source_keeps_one_criterion_and_the_old_filename(self):
+        crit, ckpt = selection_criteria(["nyuv2"])
+        self.assertEqual(list(crit), ["pooled"])
+        self.assertEqual(ckpt, {"pooled": "best.pt"})
+
+    def test_several_sources_add_macro_and_one_per_source(self):
+        crit, ckpt = selection_criteria(["nyuv2", "hypersim10k"])
+        self.assertEqual(set(crit), {"pooled", "macro", "nyuv2", "hypersim10k"})
+        self.assertEqual(ckpt["pooled"], "best.pt")
+        self.assertEqual(ckpt["nyuv2"], "best_nyuv2.pt")
+        self.assertEqual(ckpt["hypersim10k"], "best_hypersim10k.pt")
+
+    @staticmethod
+    def _m(tp, selected, positives=0, contour=0):
+        return {"tp": tp, "selected": selected, "positives": positives,
+                "contour": contour, "precision": tp / max(selected, 1),
+                "recall": 0.0, "base_rate": 0.0, "retention": 0.0}
+
+    def test_pooled_is_a_micro_average_over_the_raw_counts(self):
+        crit, _ = selection_criteria(["a", "b"])
+        m = {"a": self._m(10, 100), "b": self._m(60, 100)}
+        self.assertAlmostEqual(crit["pooled"](m), 70 / 200)
+
+    def test_macro_weights_the_sources_equally(self):
+        crit, _ = selection_criteria(["a", "b"])
+        m = {"a": self._m(10, 100), "b": self._m(60, 100)}
+        self.assertAlmostEqual(crit["macro"](m), (0.10 + 0.60) / 2)
+
+    def test_pooled_and_macro_disagree_when_a_source_has_more_selected_pixels(self):
+        """The failure mode, in miniature: the big easy source carries the pooled score."""
+        crit, _ = selection_criteria(["small_hard", "big_easy"])
+        m = {"small_hard": self._m(5, 100), "big_easy": self._m(540, 900)}
+        self.assertAlmostEqual(crit["macro"](m), (0.05 + 0.60) / 2)
+        self.assertAlmostEqual(crit["pooled"](m), 545 / 1000)
+        self.assertGreater(crit["pooled"](m), crit["macro"](m))
+
+    def test_a_per_source_criterion_reads_only_that_source(self):
+        crit, _ = selection_criteria(["a", "b"])
+        m = {"a": self._m(10, 100), "b": self._m(60, 100)}
+        self.assertAlmostEqual(crit["a"](m), 0.10)
+        self.assertAlmostEqual(crit["b"](m), 0.60)
+
+    def test_the_criteria_can_rank_epochs_differently(self):
+        """This is the whole point: one run, two answers for 'best epoch'."""
+        crit, _ = selection_criteria(["nyuv2", "hypersim"])
+        ep17 = {"nyuv2": self._m(50, 100), "hypersim": self._m(300, 500)}
+        ep28 = {"nyuv2": self._m(42, 100), "hypersim": self._m(340, 500)}
+        self.assertGreater(crit["pooled"](ep28), crit["pooled"](ep17))
+        self.assertGreater(crit["nyuv2"](ep17), crit["nyuv2"](ep28))
 
 
 if __name__ == "__main__":
