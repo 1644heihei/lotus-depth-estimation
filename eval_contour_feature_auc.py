@@ -38,8 +38,9 @@ if str(_ROOT) not in sys.path:
 
 from eval_mask_contour_localization import discontinuities
 from eval_object_oracle_ceiling import _cache_path
-from eval_regressor_predepth_nyuv2 import eigen_valid_mask, list_nyu_pairs
 from utils.align_space import add_align_space_arg, get_aligner
+from utils.eval_frames import (add_dataset_args, depth_scale, list_frames,
+                               valid_mask)
 
 
 def parse_args():
@@ -62,6 +63,7 @@ def parse_args():
     p.add_argument("--max_px", type=int, default=2_000_000, help="Subsample cap for scoring.")
     p.add_argument("--seed", type=int, default=42)
     add_align_space_arg(p)
+    add_dataset_args(p)
     return p.parse_args()
 
 
@@ -136,15 +138,15 @@ def main():
     align = get_aligner(args.align_space)
     rng_ = np.random.default_rng(args.seed)
 
-    pairs = list_nyu_pairs(rgb_dir)
+    pairs = list_frames(args)
     if args.max_images:
         pairs = pairs[: args.max_images]
 
     cols, labels, halves = {}, [], []
     for idx, (rgb_path, depth_path) in enumerate(tqdm(pairs, desc="features")):
-        gt = np.array(Image.open(depth_path)).astype(np.float64) / 1000.0
+        gt = np.array(Image.open(depth_path)).astype(np.float64) / depth_scale(args.dataset)
         h, w = gt.shape
-        valid = np.isfinite(gt) & (gt > 1e-3) & (gt < 10.0) & eigen_valid_mask(h, w)
+        valid = valid_mask(args.dataset, gt)
         if valid.sum() < 100:
             continue
         pp = _cache_path(rgb_path, rgb_dir, pred_cache, "_pred.npy")

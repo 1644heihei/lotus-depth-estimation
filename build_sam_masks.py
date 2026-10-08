@@ -102,6 +102,15 @@ def parse_args():
     p.add_argument("--model", type=str, default="facebook/sam-vit-huge")
     p.add_argument("--detection_score_thr", type=float, default=0.5)
     p.add_argument("--half_precision", action="store_true")
+    p.add_argument(
+        "--image_root",
+        type=str,
+        default=None,
+        help="Enumerate every image under this root instead of using --dataset's naming "
+             "convention. For evaluation sets whose RGB is not named rgb_*.png - ScanNet "
+             "stores color/*.jpg - staged into an RGB-only tree. Cache keys are relative "
+             "to this root, so point the evaluator's --rgb_dir at the same path.",
+    )
     p.add_argument("--max_images", type=int, default=0)
     p.add_argument("--overwrite", action="store_true")
     return p.parse_args()
@@ -167,7 +176,13 @@ def main():
         processor = SamProcessor.from_pretrained(args.model)
         model = SamModel.from_pretrained(args.model, torch_dtype=dtype).to(device).eval()
 
-    if args.dataset == "hypersim":
+    if args.image_root:
+        rgb_dir = Path(args.image_root)
+        exts = {".png", ".jpg", ".jpeg", ".webp"}
+        paths = sorted(p for p in rgb_dir.rglob("*") if p.suffix.lower() in exts)
+        if not paths:
+            raise ValueError(f"--image_root {rgb_dir} holds no images")
+    elif args.dataset == "hypersim":
         rgb_dir = Path(args.hypersim_root)
         paths = sorted(rgb_dir.rglob("rgb_*.png"))
     else:
