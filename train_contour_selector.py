@@ -56,7 +56,7 @@ from contour_selector import (PRED_SPACES, UNet, build_input, contour_labels,
                               in_channels, load_candidates, load_prediction,
                               top_share_mask_torch)
 from utils.eval_frames import (add_dataset_args, depth_scale, list_frames,
-                               valid_mask)
+                               scene_of, valid_mask)
 
 NYU = "C:/Users/nihei/lotus-depth-estimation/datasets/eval/depth/nyuv2/nyu_labeled_extracted.tar"
 
@@ -332,13 +332,19 @@ def main():
             idx = np.random.default_rng(args.seed).permutation(len(pairs))[: src["max_images"]]
             pairs = [pairs[i] for i in sorted(idx)]
 
-        # scene-level split: frames from one room are near-duplicates of each other
-        scenes = sorted({p.parent.name for p, _ in pairs})
+        # scene-level split: frames from one room are near-duplicates of each other.
+        # scene_of() rather than the parent directory, because ScanNet's layout puts
+        # `color` there for every frame and the split would silently become no split.
+        scene = lambda p: scene_of(src["dataset"], p)
+        scenes = sorted({scene(p) for p, _ in pairs})
+        assert len(scenes) > 1, (
+            f"[{src['dataset']}] all {len(pairs)} frames resolve to one scene "
+            f"({scenes[0]!r}); a scene-disjoint split is impossible")
         n_val = (round(len(scenes) * args.val_frac) if args.val_frac else args.val_scenes)
         n_val = min(max(1, n_val), len(scenes) - 1)
         val_scenes = set(rng.choice(scenes, size=n_val, replace=False))
-        tr = [p for p in pairs if p[0].parent.name not in val_scenes]
-        va = [p for p in pairs if p[0].parent.name in val_scenes]
+        tr = [p for p in pairs if scene(p[0]) not in val_scenes]
+        va = [p for p in pairs if scene(p[0]) in val_scenes]
         print(f"[{src['dataset']}] frames {len(pairs)}  scenes {len(scenes)}  ->  "
               f"train {len(tr)} / val {len(va)} ({len(val_scenes)} scenes held out)")
         assert va and tr

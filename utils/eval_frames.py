@@ -109,6 +109,17 @@ def list_frames(args) -> list[tuple[Path, Path]]:
     return out
 
 
+def scene_of(dataset: str, rgb_path: Path) -> str:
+    """The scene a frame belongs to, for scene-disjoint splits.
+
+    NYUv2 and Hypersim put frames directly under a scene directory, so the parent is the
+    scene. ScanNet stores `scene0406_02/color/000300.jpg`, where the parent is `color` for
+    every frame in the split - taking it as the scene collapses 271 scenes into one and a
+    "scene-disjoint" split becomes no split at all, silently.
+    """
+    return rgb_path.parent.parent.name if dataset == "scannet" else rgb_path.parent.name
+
+
 def depth_scale(dataset: str) -> float:
     """Divisor that turns the stored uint16 depth into metres."""
     return DEPTH_SCALE[dataset]
