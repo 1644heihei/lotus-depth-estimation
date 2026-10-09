@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>鋭化する場所を学習する</title>
+<style>
+  :root{
+    --ink:#16181d; --quiet:#555b66; --rule:#c9ced8; --faint:#eef1f6;
+    --accent:#1c4f8c; --bg:#ffffff;
+  }
+  @media print{
+    @page{ size:A4; margin:20mm 18mm; }
+    body{ font-size:9.6pt; }
+    .nobreak{ break-inside:avoid; }
+    h2{ break-after:avoid; }
+    figure,table{ break-inside:avoid; }
+    .screen-only{ display:none; }
+  }
+  *{ box-sizing:border-box; }
+  body{
+    margin:0 auto; padding:28px 20px 72px; max-width:760px; background:var(--bg);
+    color:var(--ink); line-height:1.75;
+    font-family:"Yu Mincho","YuMincho","Hiragino Mincho ProN","Noto Serif JP",
+                "MS Mincho",serif;
+    font-size:10.5pt;
+    /* 和欧混在では両端揃えが語間に不自然な空きを作るので左揃えにする */
+    text-align:left; line-break:strict; overflow-wrap:break-word;
+  }
+  h1,h2,h3,.meta,table,figcaption,.label{
+    font-family:"Yu Gothic UI","Yu Gothic","Hiragino Kaku Gothic ProN",
+                "Noto Sans JP","Meiryo",sans-serif;
+  }
+  h1{ font-size:17pt; line-height:1.5; margin:0 0 6px; text-align:center;
+      letter-spacing:.01em; }
+  .sub{ text-align:center; color:var(--quiet); font-size:10pt; margin:0 0 4px;
+        font-family:"Yu Gothic UI","Yu Gothic",sans-serif; }
+  .meta{ text-align:center; color:var(--quiet); font-size:9.5pt;
+         margin:0 0 22px; }
+  .todo{ background:#fff3cd; border-bottom:1px solid #d9a600; padding:0 3px; }
+  h2{ font-size:12pt; margin:26px 0 8px; padding-bottom:4px;
+      border-bottom:1.5px solid var(--ink); }
+  h3{ font-size:10.5pt; margin:18px 0 6px; color:var(--accent); }
+  p{ margin:0 0 10px; }
+  .abstract{ background:var(--faint); border:1px solid var(--rule);
+             padding:14px 16px; margin:0 0 22px; font-size:9.8pt;
+             line-height:1.7; }
+  .abstract h2{ font-size:10.5pt; border:0; margin:0 0 6px; padding:0; }
+  ol,ul{ margin:0 0 10px; padding-left:1.5em; }
+  li{ margin-bottom:4px; }
+  table{ border-collapse:collapse; width:100%; font-size:9.3pt; margin:6px 0 4px;
+         font-variant-numeric:tabular-nums; }
+  caption{ caption-side:top; text-align:left; font-size:9.3pt;
+           color:var(--quiet); margin-bottom:5px;
+           font-family:"Yu Gothic UI","Yu Gothic",sans-serif; }
+  th,td{ padding:4px 8px; border:0; }
+  thead th{ border-top:1.2px solid var(--ink); border-bottom:.8px solid var(--ink);
+            text-align:left; font-weight:600; }
+  tbody tr:last-child td{ border-bottom:1.2px solid var(--ink); }
+  td.n,th.n{ text-align:right; }
+  .hl{ font-weight:700; }
+  figure{ margin:14px 0 16px; }
+  figure img{ width:100%; height:auto; border:1px solid var(--rule); }
+  figcaption{ font-size:9pt; color:var(--quiet); margin-top:6px; line-height:1.6; }
+  .refs{ font-size:9pt; line-height:1.6; }
+  .refs li{ margin-bottom:5px; }
+  code{ font-family:Consolas,"SF Mono",monospace; font-size:9pt;
+        background:var(--faint); padding:1px 4px; }
+  .note{ font-size:9.3pt; color:var(--quiet); border-left:3px solid var(--rule);
+         padding-left:12px; margin:12px 0; }
+</style>
+</head>
+<body>
+
+<h1>鋭化する場所を学習する<br>
+<span class="sub">— 拡散ベース単眼深度推定に対する選択的境界精緻化 —</span></h1>
+<p class="meta"><span class="todo">著者名</span> ／ <span class="todo">所属</span></p>
+
+<div class="abstract">
+<h2>概要</h2>
+<p>拡散モデルに基づく単眼深度推定は面の精度は高いが、深度の不連続（物体境界）がぼやける。
+分割モデルが見つけた輪郭で予測深度を鋭化すれば直りそうだが、<strong>すべての輪郭に
+鋭化を掛けると NYUv2 の境界 BF<sub>1</sub> は 1.90% 悪化する</strong>。
+本研究は測定によって、問題が輪郭の<em>位置</em>ではないことを示す。真の深度段差から最寄りの
+輪郭までは中央値 1.00 画素である。壊れているのは<em>どの輪郭を使うか</em>で、
+輪郭画素の 79.8% は段差のない場所にある。正解の 4% だけを正解データで選び、
+輪郭を 1 画素も動かさずに鋭化すると、効果は −1.90% から <strong>+43.39%</strong> へ符号が反転する。
+そこで本研究は修正操作を固定し、<strong>それをどこに掛けるかだけを学習</strong>する。
+795 枚・16 分で学習した 193 万パラメータの選別器は、NYUv2 の BF<sub>1</sub> を
+seed 4 本で <strong>11.92 ± 0.90%</strong> 向上させる。さらに<strong>再学習なしで</strong>、
+アーキテクチャも出力表現も異なる第二の深度モデルに適用でき、そちらでは
+<strong>27.83 ± 1.27%</strong> 向上する。学習を伴わない対照 5 種を各モデル自身の予測で測定し、
+学習の寄与を 10.7 ポイントと 17.4 ポイントと特定した。選別器と鋭化の追加コストは
+1 枚あたり 30 ミリ秒で、分割の点グリッドを粗くすれば<strong>分割コストの 20% で利得の 95%</strong>
+が得られる。併せて負の結果も報告する。本手法は<strong>深度モデルをまたいでは転移するが、
+データセットをまたいでは転移せず</strong>、4 通りの対処がいずれも失敗した。</p>
+</div>
+
+<h2>1. はじめに</h2>
+
+<p>事前学習済みの拡散モデルを転用した単眼深度推定 [1,2,3] は画素単位の精度では強いが、
+生成モデルの持つ滑らかさを物体境界で引き継いでしまう。AbsRel が優秀でありながら、
+画像中のすべての遮蔽境界が数画素にわたってにじんでいる、ということが起こりうる。
+画素平均の指標はこれを検出しない。境界画素は画像のごく一部で、平らな面に支配された指標は
+問題なしと報告するからである。境界専用の指標なら検出できる [4]。</p>
+
+<p>深度モデルに手を入れずに済むため、境界を後処理で直す方針は魅力的である。
+先行研究は<strong>深度をどう動かすか</strong>を学習してきた [5,6,7]。
+本研究は逆の分解を取る。<strong>修正操作を固定し、それをどこに掛けるかだけを学習する。</strong></p>
+
+<p>この選択は経験的なものである。第 3 節では、分割モデル [8] が描いた輪郭すべてに
+鋭化を掛けると境界 BF<sub>1</sub> が 1.90% <em>下がる</em>ことを測定する。
+同じ測定が理由も示す。輪郭の位置はすでに十分であり、一方で輪郭の 79.8% は深度段差を
+まったく示していない。そこを鋭化しても滑らかな面を壊すだけである。
+位置を一切変えずに、正解データで正しい輪郭だけを選ぶと、効果は −1.90% から +43.39% へ動く。
+律速は位置精度ではなく<strong>選別</strong>である。</p>
+
+<p>本研究の貢献は次の 4 点である。</p>
+<ol>
+  <li>後処理による境界鋭化の律速要因が選別であることを測定で特定した。輪郭を 1 画素も
+      動かさずに効果の符号を反転させるオラクルを含む（第 3 節）。</li>
+  <li>修正操作を固定して選別だけを学習する手法を提案した。これにより<strong>学習が何に
+      寄与したかの帰属が明確</strong>になる（第 4 節）。</li>
+  <li>アーキテクチャ・パラメータ数・出力表現の異なる 2 つの深度モデルで評価した。
+      各 seed 4 本、学習を伴わない対照 5 種を<strong>各モデル自身の予測で</strong>測定した（第 5 節）。</li>
+  <li>計算コストを分析し、追加分が 1 枚 30 ミリ秒であること、粗い分割グリッドで
+      分割コストの 20% から利得の 95% が得られることを示した（第 6 節）。</li>
+</ol>
+
+<p>第 7 節では、本手法がデータセットをまたいでは転移しないこと、およびその修復を
+4 通り試みて失敗したことを報告する。</p>
+
+<figure class="nobreak">
+  <img src="figures/qualitative_a.png" alt="鋭化の前後と、BF1 が比較する不連続エッジ">
+  <figcaption><strong>図 1：手法が何をしているか。</strong>
+  上段は画像全体で、選別された輪郭の外側は何も動いていない。
+  中段は 72 画素のズーム。ベースラインでは机の縁が数画素にわたってにじんでいるのに対し、
+  鋭化後は段差が復元されている。
+  下段は各深度マップが含む不連続エッジで、これが BF<sub>1</sub> の比較対象である。
+  緑は正解と一致、赤は偽、灰は取りこぼし。
+  パネルにはそのフレームの AbsRel と対象フレーム中の順位を印字してあり、
+  これが分割中の最良例ではないことを読者が確認できる。</figcaption>
+</figure>
+
+<h2>2. 関連研究</h2>
+
+<h3>2.1 拡散ベースの単眼深度推定</h3>
+<p>Marigold [1] は Stable Diffusion を合成 RGB-D で微調整し、アフィン不変な単眼深度推定へ
+転用した。Lotus [2] は拡散のスケジュールを取り除き、タイムステップを固定して 1 ステップで
+予測する。その後、1 ステップ化が手法を単純化すると同時に桁違いに高速化することが
+示された [9]。本研究は、この系統の中で可能な限り離れた 2 つのモデルで評価する。
+一つは 213 億パラメータの拡散トランスフォーマでアフィン不変な log 深度を出力し、
+もう一つは 8.68 億パラメータの UNet で視差を出力する。</p>
+
+<h3>2.2 後処理としての境界鋭化</h3>
+<p>Ramamonjisoa らの研究 [5] が最も近い。遮蔽境界の周囲の画素を再標本化する 2 次元変位場を
+学習するもので、任意の深度推定器の出力に適用でき、NYUv2 の学習 795 枚・評価 654 枚という
+使い方まで本研究と同一である。SharpNet [6] は遮蔽輪郭の回復を深度ネットワーク自身の
+学習に組み込む。Edge-guided 後処理 [7] は自己教師ありの視差合成において境界を保存する。
+より最近では、NeRF による深度精緻化 [10] が edge F1 の相対 2.9% 改善を報告している。
+これらはいずれも<strong>深度をどう動かすか</strong>を学習する。
+著者らの知る限り、修正操作を固定して対象だけを学習する研究はなく、
+また促進可能な分割モデルを境界候補の供給源として用いる研究もない。</p>
+
+<div class="note">
+<strong>直接比較は行っていない。</strong>[5] はコードが公開されているが学習済み重みの公開がなく、
+README に推論手順の記載もなく、PyTorch 0.4 以上を要求するため現行の PyTorch では動作しない。
+代わりに本研究自身の分割利用をアブレーションし（第 5 節）、外部分割がどれだけ寄与するかという
+関連する問いに答えた。<strong>これは本手法のアブレーションであって先行研究との比較ではなく、
+そのように提示することもしない。</strong>
+</div>
+
+<h3>2.3 境界指標</h3>
+<p>Depth Pro [4] のスケール不変な境界 BF<sub>1</sub> を採用する。隣接画素間の深度の<em>比</em>が
+閾値を超えたときに深度段差があると判定し、その閾値を掃引する指標である。
+本研究は新しい指標を提案しない。Lotus も本研究が用いる拡散トランスフォーマモデルも
+NYUv2 の BF<sub>1</sub> を報告していないため、ベースラインは著者らが測定した。</p>
+
+<h3>2.4 深度のための分割</h3>
+<p>Segment Anything [8] は、深度を事前情報としてマスクを精緻化する方向で利用されてきた。
+本研究はこれを逆方向に用いる。学習した選別器が選り分ける<strong>深度境界の候補</strong>の
+供給源としてである。</p>
+
+<h2>3. 診断：律速は選別である</h2>
+
+<h3>3.1 修正操作</h3>
+<p><em>d</em> を予測深度、<em>C</em> を輪郭画素の集合とする。障壁鋭化は、<em>C</em> の周囲
+±2 画素の帯を捨て、帯の外側から領域ラベルを内側へ伝播させて輪郭の両側が帯の内部で接する
+ようにし（一方が他方へ漏れ込まないように）、捨てた各画素を半径 3 画素以内の<strong>自分の側の
+局所平均</strong>で埋め直す。帯を捨てるのは、拡散モデルが境界をまたいで値を内挿するためである。
+片側だけから埋め直すことで、この混ざりを除去する。
+この操作は設定値を 2 つ持つだけで、学習するものは何もない。
+充填半径は帯より大きくなければならない。さもなければ埋める元が残らず、
+何も起きない無操作になる。</p>
+
+<h3>3.2 全輪郭に掛けると失敗する</h3>
+<p>表 1 は、213 億パラメータの拡散トランスフォーマ深度モデルを土台に、
+Segment Anything が描く輪郭すべてにこの操作を掛けた結果である。境界 BF<sub>1</sub> は
+1.90% 低下する。</p>
+
+<table class="nobreak">
+  <caption><strong>表 1：</strong>後処理による鋭化が失敗する理由と、何がそれを直すか。
+  NYUv2 654 枚。オラクル選別は正解データを用いるが、輪郭は 1 画素も動かさない。</caption>
+  <thead><tr><th>鋭化した輪郭</th><th class="n">残存率</th><th class="n">生の BF<sub>1</sub></th></tr></thead>
+  <tbody>
+    <tr><td>分割モデルの全輪郭</td><td class="n">100%</td><td class="n">−1.90%</td></tr>
+    <tr><td>オラクル：正しいものだけ</td><td class="n">4%</td><td class="n hl">+43.39%</td></tr>
+  </tbody>
+</table>
+
+<h3>3.3 位置精度は問題ではない</h3>
+<p>真の深度不連続それぞれから最寄りの輪郭までの距離を測ると、中央値 1.00 画素、
+76.9% が 2 画素以内である。輪郭は境界のある場所にある。
+壊れているのは逆方向で、<strong>輪郭画素の 79.8% は深度段差のない場所にある</strong>
+——壁紙の柄、床の目地、ポスターの縁である。そこを鋭化することは、
+滑らかな面の帯を捨てて、値の一致する両側から埋め直すことであり、雑音を加える以外の効果がない。</p>
+
+<h3>3.4 正解で選別すると符号が反転する</h3>
+<p>真の不連続から 1 画素以内にある輪郭画素（全体の 4%）だけを残し、
+残した輪郭はすべて元の位置に置いたまま鋭化すると、生の効果は −1.90% から +43.39% へ動く（表 1）。
+輪郭は一つも動いていない。変わったのは集合だけである。
+これは選別が律速要因であることを分離して示すと同時に、学習する選別器の目標を定める。</p>
+
+<h2>4. 手法</h2>
+
+<figure class="nobreak">
+<svg viewBox="0 0 700 330" role="img" aria-label="学習するのは選別器だけ" style="width:100%;height:auto">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#555b66"/>
+    </marker>
+  </defs>
+  <g fill="none" stroke="#555b66" stroke-width="1.2">
+    <path d="M350 56V76H200V96" marker-end="url(#ar)"/>
+    <path d="M350 56V76H500V96" marker-end="url(#ar)"/>
+    <path d="M200 146V176" marker-end="url(#ar)"/>
+    <path d="M500 146V176" marker-end="url(#ar)"/>
+    <path d="M350 234V258" marker-end="url(#ar)"/>
+    <path d="M350 300V318" marker-end="url(#ar)" stroke-dasharray="0"/>
+    <path d="M50 121H30V286H150" marker-end="url(#ar)"/>
+  </g>
+  <g font-family="Yu Gothic UI, Yu Gothic, sans-serif">
+    <rect x="245" y="26" width="210" height="30" rx="6" fill="none" stroke="#555b66" stroke-width="1.2"/>
+    <text x="350" y="46" text-anchor="middle" font-size="13" fill="#16181d">入力：RGB 画像 1 枚</text>
+
+    <rect x="50" y="96" width="300" height="50" rx="6" fill="none" stroke="#555b66" stroke-width="1.2"/>
+    <text x="64" y="118" font-size="13" font-weight="600" fill="#16181d">深度推定モデル（凍結）</text>
+    <text x="64" y="137" font-size="11.5" fill="#555b66">アフィン不変な深度を出力</text>
+
+    <rect x="370" y="96" width="280" height="50" rx="6" fill="none" stroke="#555b66" stroke-width="1.2"/>
+    <text x="384" y="118" font-size="13" font-weight="600" fill="#16181d">分割モデル（凍結）</text>
+    <text x="384" y="137" font-size="11.5" fill="#555b66">領域境界 → 輪郭の候補</text>
+
+    <rect x="150" y="176" width="400" height="58" rx="6" fill="#1c4f8c" fill-opacity="0.08" stroke="#1c4f8c" stroke-width="2"/>
+    <text x="166" y="198" font-size="13" font-weight="600" fill="#16181d">選別器（U-Net・193 万）── 学習するのはここだけ</text>
+    <text x="166" y="221" font-size="11.5" fill="#555b66">輪郭画素ごとに確率を出し、上位 6% を残す</text>
+
+    <rect x="150" y="258" width="400" height="42" rx="6" fill="none" stroke="#555b66" stroke-width="1.2"/>
+    <text x="166" y="276" font-size="13" font-weight="600" fill="#16181d">鋭化（固定操作・パラメータ無し）</text>
+    <text x="166" y="293" font-size="11.5" fill="#555b66">±2px を捨て、輪郭の両側からそれぞれ埋め直す</text>
+
+    <text x="36" y="206" font-size="11" fill="#555b66">予測深度</text>
+    <text x="36" y="221" font-size="11" fill="#555b66">（修正対象）</text>
+  </g>
+</svg>
+<figcaption><strong>図 2：学習するのは選別器だけ。</strong>
+深度推定モデルも分割モデルも凍結し、修正操作はパラメータを持たない固定操作である。
+したがって利得は選別のみに帰属する。</figcaption>
+</figure>
+
+<p>図 2 にパイプラインを示す。深度推定モデルと分割モデルは凍結する。
+修正は第 3 節の固定操作である。学習する構成要素は選別器だけである。</p>
+
+<p><strong>入力と出力。</strong>選別器は 4 段の U-Net で、パラメータ数は 1,928,993 である。
+RGB 画像（3 チャネル）、予測深度（1）、輪郭マスク（1）を入力し、画素ごとに 1 つのロジットを出す。
+予測深度は<strong>画像ごとに標準化</strong>する。これらのモデルはアフィン不変であり、
+絶対的な水準と尺度には情報がないため、学習時と推論時でここが食い違っても何も壊れず、
+最終的な指標だけが悪化する。log 深度ではなく視差を出すモデルに対しては、
+先に −log <em>d</em> を適用する。視差は深度が小さいほど大きくなるため、
+そのまま与えると符号の反転した信号を渡すことになるからである。</p>
+
+<p><strong>残存率。</strong>確率の閾値ではなく、<strong>画像ごとに上位 6%</strong> の輪郭画素を残す。
+閾値を固定すると、場面に含まれる輪郭の量によって残す量が変わり、
+鋭化が使う予算がフレームごとに動いてしまう。</p>
+
+<p><strong>損失と学習。</strong>輪郭画素だけにマスクした二値交差エントロピーを用いる。
+輪郭を含まない画像の 88% は、選別器に問うていない問題である。
+輪郭画素は、正解深度の不連続から 1 画素以内にあれば正例とする。
+<strong>正解データはこのラベル生成にのみ用い、推論経路には一切現れない。</strong>
+学習は NYUv2 の学習用 795 枚をシーン単位で分割して行い、
+RTX 4090 1 枚で 16 分・VRAM 3.5 GB を要する。評価用の 654 枚には一度も触れない。</p>
+
+<h2>5. 実験</h2>
+
+<h3>5.1 設定</h3>
+<p>NYUv2 [11] の評価用 654 枚で評価する。学習フレームとはシーンが重複しない。
+指標は Depth Pro [4] のスケール不変な境界 BF<sub>1</sub> で、
+5% から 25% までの 11 点の閾値で掃引する。
+各土台モデル自身の未鋭化の予測に対する BF<sub>1</sub> の相対変化を「生の増分」として報告する。
+予測は採点前にそれぞれの空間——一方は log 深度、他方は視差——で正解に整合させる。
+この整合はすべての変種に等しく作用する。</p>
+
+<h3>5.2 主結果</h3>
+<p>表 2 は、アーキテクチャもパラメータ規模も出力表現も共有しない 2 つの深度モデルでの結果である。
+<strong>学習した選別器は 1 つだけ</strong>で、第一のモデルの予測で学習した。
+第二のモデルには<strong>再学習なしで</strong>適用し、視差から log 深度への変換だけを加えている。</p>
+
+<table class="nobreak">
+  <caption><strong>表 2：主結果。</strong>各 seed 4 本、± は標準偏差。
+  両モデルに同一の選別器を適用しており、学習は第一のモデルでのみ行った。</caption>
+  <thead><tr><th>土台の深度モデル</th><th class="n">BF<sub>1</sub></th>
+    <th class="n">選別なし</th><th class="n">＋選別器</th></tr></thead>
+  <tbody>
+    <tr><td>DiT・213 億・log 深度</td><td class="n">0.0884</td><td class="n">−1.90%</td>
+        <td class="n hl">+11.92 ± 0.90%</td></tr>
+    <tr><td>UNet・8.68 億・視差</td><td class="n">0.0693</td><td class="n">+10.31%</td>
+        <td class="n hl">+27.83 ± 1.27%</td></tr>
+  </tbody>
+</table>
+
+<p>第一のモデルでは seed 4 本すべてが +10% を超え、95% 信頼区間の下限は +10.49% である。
+画素単位の精度は劣化しない。AbsRel は 0.03881 から 0.03860 へ、
+δ<sub>1</sub> は 0.97969 から 0.98000 へ動く。
+いずれも変化は小さく、<strong>境界のために精度を犠牲にしていない</strong>ということのみを主張する。</p>
+
+<p>フレーム単位で採点すると、平均が少数のフレームに支えられているのではないことが分かる。
+採点できた 651 枚のうち <strong>493 枚（75.7%）で改善</strong>し、
+相対利得の中央値は +14.13%、四分位は +0.32% と +34.38% である。
+図 1 はこの分布の中ほどにあるフレームである。</p>
+
+<h3>5.3 対照</h3>
+<p>利得は学習ではなく鋭化そのものから来ているのかもしれず、あるいは単に疎であることから
+来ているのかもしれない。表 3 は、学習を伴わない 5 つの代替手段を、
+<strong>各土台モデル自身の予測で</strong>測定したものである。</p>
+
+<table class="nobreak">
+  <caption><strong>表 3：</strong>学習を伴わない対照。土台モデルごとに別々に測定した、生の BF<sub>1</sub> の変化。</caption>
+  <thead><tr><th>選別の方法</th><th class="n">DiT 213 億</th><th class="n">UNet 8.68 億</th></tr></thead>
+  <tbody>
+    <tr><td>なし（全輪郭）</td><td class="n">−1.90%</td><td class="n">+10.31%</td></tr>
+    <tr><td>移設（同じ疎さ・違う場所）</td><td class="n">−0.50%</td><td class="n">−0.57%</td></tr>
+    <tr><td>画素ランダム（同率）</td><td class="n">−20.35%</td><td class="n">−19.70%</td></tr>
+    <tr><td>ブロックランダム（同率）</td><td class="n">−1.48%</td><td class="n">−0.67%</td></tr>
+    <tr><td>手作り特徴の閾値（最良）</td><td class="n">+1.25%</td><td class="n">+10.46%</td></tr>
+    <tr><td class="hl">学習した選別器</td><td class="n hl">+11.92%</td><td class="n hl">+27.83%</td></tr>
+    <tr><td class="hl">学習の寄与</td><td class="n hl">10.7 pt</td><td class="n hl">17.4 pt</td></tr>
+  </tbody>
+</table>
+
+<p>手作り特徴の対照は、予測深度の log 勾配の局所的な記述子に閾値を掛けるものである。
+その特徴量は、順位付けの良さではなく<strong>最終指標で選んだ</strong>。
+候補 4 つを測ると AUC の順位と BF<sub>1</sub> の順位は<em>逆転</em>し、
+AUC が最も低い特徴量（0.801）が BF<sub>1</sub> 最良（+1.25%）を、
+AUC が最も高い特徴量（0.876）が BF<sub>1</sub> 最下位（−2.59%）を与える。
+代理指標で選んだ対照は弱すぎることになり、<strong>弱い対照は比較される手法を良く見せるだけ</strong>である。</p>
+
+<p>画素ランダムの選別が両モデルでほぼ同じ値（−20.35% と −19.70%）を示すのは当然である。
+この対照が測っているのは鋭化操作の性質であって、深度モデルの性質ではない。</p>
+
+<h3>5.4 分割モデルの寄与</h3>
+<p>分割モデルを完全に外し、選別器が RGB と深度から自力で境界を見つけ、
+有効画素すべてを候補とする設定では、+11.92% ではなく <strong>+7.30%</strong> となる。
+分割の寄与は 5.19 ポイント、全体の 42% である。
+その機構は適合率ではなく<strong>再現率</strong>にある。
+分割輪郭上で数えると真の段差は 1 枚あたり 1,221 画素で、予算 1,207 画素はその 98.9% を覆える。
+画像全体で数えると 3,042 画素あり、同じ予算では再現率の上限が 39.7% になる。
+<strong>分割モデルは正解の集合を絞ることによって寄与している。</strong></p>
+
+<h2>6. 計算コスト</h2>
+
+<p>表 4 は RTX 4090 1 枚での 1 フレームあたりの実時間である。
+ウォームアップ後に実フレームで測定した。</p>
+
+<table class="nobreak">
+  <caption><strong>表 4：</strong>1 枚あたりのコストと、それが買う利得。
+  効いてくる調整項は分割モデルの点グリッドだけである。</caption>
+  <thead><tr><th>構成</th><th class="n">ミリ秒/枚</th>
+    <th class="n">生の BF<sub>1</sub></th><th class="n">1 pt あたり</th></tr></thead>
+  <tbody>
+    <tr><td>深度推定モデルのみ</td><td class="n">495</td><td class="n">—</td><td class="n">—</td></tr>
+    <tr><td>＋選別器（分割なし）</td><td class="n">525</td><td class="n">+7.30%</td><td class="n hl">72</td></tr>
+    <tr><td>＋選別器・grid 16</td><td class="n hl">1,059</td><td class="n hl">+11.32%</td><td class="n">94</td></tr>
+    <tr><td>＋選別器・grid 48</td><td class="n">3,128</td><td class="n">+11.92%</td><td class="n">262</td></tr>
+  </tbody>
+</table>
+
+<p>選別器は 12.0 ミリ秒、鋭化は 18.3 ミリ秒であり、本研究が追加するのは 30.3 ミリ秒
+——深度推定モデル自身の 495 ミリ秒の 6% である。
+それ以外をすべて支配するのは分割モデルで、点グリッドに応じて 534 ミリ秒から 2,603 ミリ秒を要する。</p>
+
+<p><strong>粗いグリッドで足りる。</strong>grid 16 は grid 48 の利得の 95% を、コストの 20% で達成し、
+パイプライン全体を 3.0 倍速く、BF<sub>1</sub> 1 ポイントあたり 2.8 倍安くする。
+適合率はグリッドをまたいで逆順に並ぶ（grid 16・32・48 で 51.6%・50.6%・50.2%）。
+これは粗いグリッドが何をしているかを物語る。大きな物体の輪郭を辿り、
+壁紙の柄や床の目地を取りこぼすため、選別器に渡される候補集合が最初から綺麗なのである。
+grid 48 は grid 16 より 1 枚あたり 3,200 画素多く輪郭を見つけるが BF<sub>1</sub> はほとんど動かず、
+その大半が偽陽性であることを意味する。
+これは前節のアブレーションと同じ機構——<strong>分割は正解の集合を絞ることで寄与する</strong>——が
+別の軸で現れたものである。</p>
+
+<h2>7. 限界</h2>
+
+<p><strong>本手法は深度モデルをまたいでは転移するが、データセットをまたいでは転移しない。</strong>
+表 5 は、NYUv2 で学習した選別器を ScanNet [12] と Hypersim [13] に適用した結果である
+（深度モデルは同一）。</p>
+
+<table class="nobreak">
+  <caption><strong>表 5：</strong>汎化。選別器は NYUv2 で学習しており、深度モデルは全行で同一である。</caption>
+  <thead><tr><th>評価データ</th><th class="n">選別なし</th>
+    <th class="n">＋選別器</th><th class="n">適合率</th></tr></thead>
+  <tbody>
+    <tr><td>NYUv2（在ドメイン）</td><td class="n">−1.90%</td><td class="n hl">+11.92%</td><td class="n">50.2%</td></tr>
+    <tr><td>ScanNet</td><td class="n">+3.26%</td><td class="n">+2.81%</td><td class="n">17.4%</td></tr>
+    <tr><td>Hypersim</td><td class="n">+2.28%</td><td class="n">−4.64%</td><td class="n">55.8%</td></tr>
+  </tbody>
+</table>
+
+<p>いずれの未見データセットでも、選別器は全輪郭を使う場合に及ばない。
+4 通りの対処を試し、4 通りとも失敗した。
+RGB チャネルを落とす（転移はむしろ悪化した）、別データセットで学習する、
+残存率を 2% から 20% まで掃引する（ScanNet ではどの設定も選別なしに届かない）、
+両者を等量混合して学習する（在ドメインの結果を損ない、転移も改善しない）。
+学習データを 795 枚から 1,590 枚へ増やすと在ドメインの結果が悪化したため、
+<strong>データ量も律速ではない</strong>。</p>
+
+<p>これを報告するのは、この分野の先行研究が行う主張に関わるからである。
+<strong>モデル非依存な後処理が、それゆえにデータセット非依存であるとは限らない。</strong>
+2 種類の汎化は明らかに分離する。</p>
+
+<p><strong>上限までの余地。</strong>第 3 節のオラクルは +43.39% に達するのに対し、
+本手法は +11.92% であり、選別が与えうるものの 71% が未回収である。
+差は適合率にある（50.2% 対オラクルの 100%）。</p>
+
+<p><strong>指標の範囲。</strong>改善しているのは境界指標である。
+AbsRel と δ<sub>1</sub> の変化は改善と主張するには小さすぎ、劣化していないことのみを主張する。</p>
+
+<p><strong>ラベルと指標が定義を共有している。</strong>教師は「正解の深度段差から 1 画素以内」であり、
+BF<sub>1</sub> も正解の深度段差との一致を測る。正解データは推論に一切現れず、
+評価シーンは学習と重複しないが、この対応関係は念頭に置いて読まれるべきである。</p>
+
+<h2>8. おわりに</h2>
+
+<p>単眼深度に対する後処理の境界鋭化が失敗するのは、輪郭の位置が悪いからではなく、
+その大半が深度段差を示していないからである。
+修正操作を固定して対象だけを学習することで、利得の帰属が明確になり、
+1 枚あたり 30 ミリ秒・193 万パラメータで、再学習なしに深度モデルをまたいで転移する。
+データセットをまたいでは転移せず、著者らはそれを修復できなかった。</p>
+
+<h2>参考文献</h2>
+<ol class="refs">
+<li>B. Ke, A. Obukhov, S. Huang, N. Metzger, R. C. Daudt, K. Schindler,
+    “Repurposing diffusion-based image generators for monocular depth estimation,” CVPR, 2024.</li>
+<li>J. He et al., “Lotus: Diffusion-based visual foundation model for high-quality dense prediction,”
+    arXiv:2409.18124, 2024.</li>
+<li><span class="todo">要確認：主たる土台モデル（213 億パラメータの拡散トランスフォーマ深度モデル）の正式な題目と掲載先</span></li>
+<li>A. Bochkovskii et al., “Depth Pro: Sharp monocular metric depth in less than a second,” ICLR, 2025.</li>
+<li>M. Ramamonjisoa, Y. Du, V. Lepetit, “Predicting sharp and accurate occlusion boundaries
+    in monocular depth estimation using displacement fields,” CVPR, 2020.</li>
+<li>M. Ramamonjisoa, V. Lepetit, “SharpNet: Fast and accurate recovery of occluding contours
+    in monocular depth estimation,” ICCV Workshops, 2019.</li>
+<li><span class="todo">要確認：著者・掲載先</span>
+    “Edge-guided occlusion fading reduction for a light-weighted self-supervised
+    monocular depth estimation,” arXiv:1911.11705.</li>
+<li>A. Kirillov et al., “Segment Anything,” ICCV, 2023.</li>
+<li>G. Garcia, K. Abou Zeid, C. Schmidt, D. de Geus, A. Hermans, B. Leibe,
+    “Fine-tuning image-conditional diffusion models is easier than you think,” arXiv:2409.11355, 2024.</li>
+<li><span class="todo">要確認：著者・掲載先</span>
+    “Bayesian monocular depth refinement via neural radiance fields,” arXiv:2601.03869.</li>
+<li>N. Silberman, D. Hoiem, P. Kohli, R. Fergus, “Indoor segmentation and support inference
+    from RGBD images,” ECCV, 2012.</li>
+<li>A. Dai, A. X. Chang, M. Savva, M. Halber, T. Funkhouser, M. Nießner,
+    “ScanNet: Richly-annotated 3D reconstructions of indoor scenes,” CVPR, 2017.</li>
+<li>M. Roberts et al., “Hypersim: A photorealistic synthetic dataset for holistic
+    indoor scene understanding,” ICCV, 2021.</li>
+</ol>
+
+</body>
+</html>

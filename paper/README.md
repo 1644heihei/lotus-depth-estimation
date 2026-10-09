@@ -1,5 +1,18 @@
 # Paper draft
 
+Two versions of the same paper.
+
+| file | language | for |
+|---|---|---|
+| `main.tex` | English | the submission |
+| `main_ja.html` + `main_ja.pdf` | Japanese | reading, checking, the thesis |
+
+The Japanese version is single-column A4 and runs 8 pages, which is about the
+same content as 6 two-column pages. `./make_pdf.sh` regenerates the PDF with
+headless Edge or Chrome, so no LaTeX or pandoc install is needed. Both versions
+carry the same numbers; if one changes, change the other.
+
+
 `main.tex` — ~6 pages, two-column, written against IEEEtran. Swap the
 `\documentclass` line for the venue template when it arrives; nothing else in
 the file depends on IEEEtran.

@@ -14,3 +14,4 @@ yolov8n-seg.pt
 
 .claude/settings.local.json
 .golden/
+paper/_preview.png
