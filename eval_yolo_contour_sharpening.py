@@ -53,6 +53,8 @@ from eval_object_oracle_ceiling import _cache_path, load_or_build_masks, score
 from eval_perfect_contour_ceiling import propagate_labels, refill_from_own_side
 from eval_regressor_predepth_nyuv2 import eigen_valid_mask, list_nyu_pairs
 from utils.align_space import add_align_space_arg, get_aligner
+from utils.soft_edge_error import SEE_PATCH_SIZES, soft_edge_errors
+from utils.dataset_paths import resolve
 from utils.eval_frames import (add_dataset_args, depth_scale, list_frames,
                                valid_mask)
 
@@ -109,7 +111,7 @@ def parse_args():
              "and the resulting number gets compared against a full run.")
     add_align_space_arg(p)
     add_dataset_args(p)
-    return p.parse_args()
+    return resolve(p.parse_args(), p)
 
 
 def contour_of(mask):
@@ -147,6 +149,7 @@ def main():
     ar = {v: [] for v in VARIANTS}
     d1 = {v: [] for v in VARIANTS}
     kept = []
+    see = {v: {f'see_{k}': [] for k in SEE_PATCH_SIZES} for v in VARIANTS}
     skips = Counter()
 
     def weighted(c):
@@ -224,6 +227,12 @@ def main():
             _ar, _d1 = score(d, gt, valid)
             ar[name].append(_ar)
             d1[name].append(_d1)
+            # A second boundary metric, with a different definition of what "better"
+            # means: BF1 asks whether the step is detected, SEE how wrong the value is
+            # at one. An improvement in only one of them is an improvement in that
+            # metric, not necessarily in the depth map.
+            for k, val in soft_edge_errors(d, gt, valid).items():
+                see[name][k].append(val)
 
     n = len(bf1["baseline"])
     summary = {"n_images": n, "n_frames_listed": len(pairs),
@@ -233,6 +242,7 @@ def main():
                "variants": {}}
     for v in VARIANTS:
         summary["variants"][v] = {"bf1": float(np.nanmean(bf1[v])),
+                                  **{k: float(np.nanmean(x)) for k, x in see[v].items()},
                                   "abs_rel": float(np.mean(ar[v])),
                         "delta1": float(np.mean(d1[v]))}
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")

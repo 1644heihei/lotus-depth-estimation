@@ -35,6 +35,7 @@ from contour_selector import (UNet, build_input, cache_path, in_channels,
                               load_candidates, load_prediction, top_share_mask)
 from eval_yolo_contour_sharpening import sharpen
 from utils.align_space import add_align_space_arg, get_aligner
+from utils.dataset_paths import resolve
 from utils.eval_frames import (add_dataset_args, depth_scale, list_frames,
                                valid_mask)
 
@@ -61,7 +62,7 @@ def parse_args():
                         "not available on the machine doing the timing.")
     add_align_space_arg(p)
     add_dataset_args(p)
-    return p.parse_args()
+    return resolve(p.parse_args(), p)
 
 
 def timed(fn, frames, warmup, desc):

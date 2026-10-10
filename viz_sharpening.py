@@ -51,6 +51,7 @@ from eval_perfect_contour_ceiling import (propagate_labels,  # noqa: E402
                                           refill_from_own_side)
 from eval_yolo_contour_sharpening import sharpen  # noqa: E402
 from utils.align_space import add_align_space_arg, get_aligner  # noqa: E402
+from utils.dataset_paths import resolve
 from utils.eval_frames import (add_dataset_args, depth_scale,  # noqa: E402
                                list_frames, valid_mask)
 
@@ -84,7 +85,7 @@ def parse_args():
     add_align_space_arg(p)
     add_dataset_args(p)
     p.add_argument("--max_images", type=int, default=0)
-    return p.parse_args()
+    return resolve(p.parse_args(), p)
 
 
 def frame_bf1(depth, gt, valid, thresholds, weights):

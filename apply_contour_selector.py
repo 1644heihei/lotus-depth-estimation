@@ -36,6 +36,7 @@ if str(_ROOT) not in sys.path:
 from contour_selector import (PRED_SPACES, UNet, build_input, cache_path,
                               contour_labels, in_channels, load_candidates,
                               load_prediction, top_share_mask)
+from utils.dataset_paths import resolve
 from utils.eval_frames import (add_dataset_args, depth_scale, list_frames,
                                valid_mask)
 
@@ -78,7 +79,7 @@ def parse_args():
     )
     add_dataset_args(p)
     p.add_argument("--max_images", type=int, default=0)
-    return p.parse_args()
+    return resolve(p.parse_args(), p)
 
 
 def write_mask(path: Path, keep: np.ndarray) -> None:

@@ -55,6 +55,7 @@ if str(_ROOT) not in sys.path:
 from contour_selector import (PRED_SPACES, UNet, build_input, contour_labels,
                               in_channels, load_candidates, load_prediction,
                               top_share_mask_torch)
+from utils.dataset_paths import resolve
 from utils.eval_frames import (add_dataset_args, depth_scale, list_frames,
                                scene_of, valid_mask)
 
@@ -140,7 +141,7 @@ def parse_args():
              "already at or below the crop size is passed through untouched.",
     )
     add_dataset_args(p)
-    return p.parse_args()
+    return resolve(p.parse_args(), p)
 
 
 def mix_sources(args):

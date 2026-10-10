@@ -40,8 +40,23 @@ SCANNET_SPLIT = ("D:/lotus/marigold-v2/evaluation/data_split/scannet_depth/"
 
 
 def add_dataset_args(parser) -> None:
-    """Add --dataset and the two paths only Hypersim needs."""
+    """Add --dataset, --split, --model, and the paths only some datasets need.
+
+    The per-dataset paths keep their historical defaults so every command recorded in
+    docs/ still reproduces. --model and --split let utils/dataset_paths.resolve() fill
+    them instead, which is what a caller should use for anything but NYUv2: the four
+    scripts' defaults point at three different caches, and typing them out by hand is
+    how a Hypersim sweep in this project was first run at the wrong resolution.
+    """
     parser.add_argument("--dataset", choices=DATASETS, default="nyuv2")
+    parser.add_argument(
+        "--model", choices=("marigold_v2", "lotus_v1"), default=None,
+        help="Resolve the prediction cache, its resolution and its space from the "
+             "registry instead of passing them. Explicit flags still win.")
+    parser.add_argument(
+        "--split", type=str, default=None,
+        help="Which split of --dataset to resolve paths for; defaults to the one that "
+             "dataset is normally used at (NYUv2 test, ScanNet val, Hypersim eval).")
     parser.add_argument(
         "--holdout_split", type=str, default="datasets/hypersim_holdout.json",
         help="Hypersim only: the scene-level split whose eval_frames are scored.")

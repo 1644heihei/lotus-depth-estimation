@@ -38,6 +38,7 @@ if str(_ROOT) not in sys.path:
 from contour_selector import (PRED_SPACES, cache_path, contour_labels,
                               load_candidates, to_log_depth, top_share_mask)
 from utils.align_space import add_align_space_arg, get_aligner
+from utils.dataset_paths import resolve
 from utils.eval_frames import (add_dataset_args, depth_scale, list_frames,
                                valid_mask)
 
@@ -74,7 +75,7 @@ def parse_args():
     add_align_space_arg(p)
     add_dataset_args(p)
     p.add_argument("--max_images", type=int, default=0)
-    return p.parse_args()
+    return resolve(p.parse_args(), p)
 
 
 def feature_map(log_depth: np.ndarray, name: str) -> np.ndarray:
