@@ -320,6 +320,53 @@ scorable frames improve (75.7\%), with a median relative gain of $+14.13\%$ and
 quartiles $+0.32\%$ and $+34.38\%$. Fig.~\ref{fig:qualitative} shows a frame
 near the middle of that distribution.
 
+\subsection{A second boundary metric}
+
+An improvement visible in one metric may be an improvement in that metric's
+definition. We therefore also report Soft Edge Error, the boundary metric our
+primary base model's own authors use, transcribed from their implementation.
+SEE$_k$ averages, over ground-truth boundary pixels, the smallest absolute error
+between the prediction and any ground-truth depth in a $k\times k$
+neighbourhood; it forgives a displaced boundary and punishes a blurred one.
+Unlike \bfone{} it is an absolute error in depth units, so it is not
+scale-invariant and the prediction must be aligned first. Lower is better.
+
+\begin{table}[t]
+\caption{Soft Edge Error, for the checkpoint that scores $+12.49\%$ and
+$+28.18\%$ raw \bfone{}. Lower is better; the percentages are relative to each
+model's own baseline.}
+\label{tab:see}
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+& \bfone{} & SEE$_3$ & SEE$_5$ & SEE$_7$ \\
+\midrule
+\multicolumn{5}{l}{\emph{DiT, 21.3B}} \\
+baseline        & 0.0884 & 0.1148 & 0.0882 & 0.0758 \\
++ selector      & $+12.49\%$  & $-3.34\%$  & $-2.89\%$ & $-2.39\%$ \\
+relocated       & $-0.50\%$   & $+0.32\%$  & $+0.46\%$ & $+0.52\%$ \\
+oracle          & $+209.8\%$  & $-11.44\%$ & $-5.09\%$ & $-2.91\%$ \\
+\midrule
+\multicolumn{5}{l}{\emph{UNet, 868M}} \\
+baseline        & 0.0693 & 0.1403 & 0.1147 & 0.1014 \\
++ selector      & $+28.18\%$  & $-5.18\%$  & $-5.54\%$ & $-5.48\%$ \\
+relocated       & $-0.57\%$   & $+0.20\%$  & $+0.23\%$ & $+0.24\%$ \\
+oracle          & $+279.0\%$  & $-12.96\%$ & $-9.81\%$ & $-8.73\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The two metrics agree on every variant of both models: the selector improves
+both, the relocated control worsens both, and the oracle is best on both. The
+improvement is therefore not an artefact of \bfone{}'s definition.
+
+Their magnitudes are not comparable and should not be read as such. SEE is an
+absolute error averaged over boundary pixels, floored by how accurate the
+model's depth values are there, so even the oracle --- which raises \bfone{} by
+$209.8\%$ --- lowers SEE$_5$ by $5.09\%$. The improvement also shrinks as $k$
+grows ($-11.44\%$ to $-2.91\%$ for the oracle), which is what a metric that
+forgives more displacement at larger $k$ should do.
+
 \subsection{Controls}
 
 The gain could come from the sharpening rather than from the learning, or from

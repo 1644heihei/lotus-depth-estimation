@@ -328,13 +328,59 @@ RTX 4090 1 枚で 16 分・VRAM 3.5 GB を要する。評価用の 654 枚には
 相対利得の中央値は +14.13%、四分位は +0.32% と +34.38% である。
 図 1 はこの分布の中ほどにあるフレームである。</p>
 
-<h3>5.3 対照</h3>
+<h3>5.3 もう一つの境界指標</h3>
+
+<p>一つの指標でしか見えない改善は、その指標の定義による改善かもしれない。
+そこで <strong>Soft Edge Error</strong> でも測った。主たる土台モデルの著者自身が使う境界指標で、
+その実装から移植した。SEE<sub>k</sub> は、正解の境界画素において、
+<strong>k×k 近傍のどれかの正解深度との絶対誤差の最小値</strong>を平均する。
+境界のズレは許し、にじみは罰する。BF<sub>1</sub> と違って深度単位の絶対誤差なので
+スケール不変ではなく、採点前に整合させる必要がある。<strong>小さいほど良い。</strong></p>
+
+<table class="nobreak">
+  <caption><strong>表 3：</strong>Soft Edge Error。生の BF<sub>1</sub> が +12.49% / +28.18% を出す
+  チェックポイントでの値。小さいほど良く、％は各モデル自身のベースラインに対する相対変化。</caption>
+  <thead><tr><th></th><th class="n">BF<sub>1</sub></th><th class="n">SEE<sub>3</sub></th>
+    <th class="n">SEE<sub>5</sub></th><th class="n">SEE<sub>7</sub></th></tr></thead>
+  <tbody>
+    <tr><td colspan="5"><em>DiT・213 億</em></td></tr>
+    <tr><td>ベースライン</td><td class="n">0.0884</td><td class="n">0.1148</td>
+        <td class="n">0.0882</td><td class="n">0.0758</td></tr>
+    <tr><td>＋選別器</td><td class="n hl">+12.49%</td><td class="n hl">−3.34%</td>
+        <td class="n hl">−2.89%</td><td class="n hl">−2.39%</td></tr>
+    <tr><td>移設対照</td><td class="n">−0.50%</td><td class="n">+0.32%</td>
+        <td class="n">+0.46%</td><td class="n">+0.52%</td></tr>
+    <tr><td>オラクル</td><td class="n">+209.8%</td><td class="n">−11.44%</td>
+        <td class="n">−5.09%</td><td class="n">−2.91%</td></tr>
+    <tr><td colspan="5"><em>UNet・8.68 億</em></td></tr>
+    <tr><td>ベースライン</td><td class="n">0.0693</td><td class="n">0.1403</td>
+        <td class="n">0.1147</td><td class="n">0.1014</td></tr>
+    <tr><td>＋選別器</td><td class="n hl">+28.18%</td><td class="n hl">−5.18%</td>
+        <td class="n hl">−5.54%</td><td class="n hl">−5.48%</td></tr>
+    <tr><td>移設対照</td><td class="n">−0.57%</td><td class="n">+0.20%</td>
+        <td class="n">+0.23%</td><td class="n">+0.24%</td></tr>
+    <tr><td>オラクル</td><td class="n">+279.0%</td><td class="n">−12.96%</td>
+        <td class="n">−9.81%</td><td class="n">−8.73%</td></tr>
+  </tbody>
+</table>
+
+<p><strong>2 つの指標は、両モデルのすべての変種で一致する。</strong>
+選別器は両方で改善、移設対照は両方で悪化、オラクルは両方で最良。
+したがって<strong>この改善は BF<sub>1</sub> の定義の産物ではない</strong>。</p>
+
+<p>ただし変化の大きさは比較できない。SEE は境界画素の絶対誤差の平均で、
+その場所でのモデル自身の深度値の精度が下限になる。だから BF<sub>1</sub> を 209.8% 上げる
+オラクルでも SEE<sub>5</sub> は 5.09% しか下がらない。
+また k が大きいほど改善が小さくなる（オラクルで −11.44% → −2.91%）。
+大きい k ほどズレを許すのだから、そうなるのが定義どおりである。</p>
+
+<h3>5.4 対照</h3>
 <p>利得は学習ではなく鋭化そのものから来ているのかもしれず、あるいは単に疎であることから
-来ているのかもしれない。表 3 は、学習を伴わない 5 つの代替手段を、
+来ているのかもしれない。表 4 は、学習を伴わない 5 つの代替手段を、
 <strong>各土台モデル自身の予測で</strong>測定したものである。</p>
 
 <table class="nobreak">
-  <caption><strong>表 3：</strong>学習を伴わない対照。土台モデルごとに別々に測定した、生の BF<sub>1</sub> の変化。</caption>
+  <caption><strong>表 4：</strong>学習を伴わない対照。土台モデルごとに別々に測定した、生の BF<sub>1</sub> の変化。</caption>
   <thead><tr><th>選別の方法</th><th class="n">DiT 213 億</th><th class="n">UNet 8.68 億</th></tr></thead>
   <tbody>
     <tr><td>なし（全輪郭）</td><td class="n">−1.90%</td><td class="n">+10.31%</td></tr>
@@ -357,7 +403,7 @@ AUC が最も高い特徴量（0.876）が BF<sub>1</sub> 最下位（−2.59%�
 <p>画素ランダムの選別が両モデルでほぼ同じ値（−20.35% と −19.70%）を示すのは当然である。
 この対照が測っているのは鋭化操作の性質であって、深度モデルの性質ではない。</p>
 
-<h3>5.4 分割モデルの寄与</h3>
+<h3>5.5 分割モデルの寄与</h3>
 <p>分割モデルを完全に外し、選別器が RGB と深度から自力で境界を見つけ、
 有効画素すべてを候補とする設定では、+11.92% ではなく <strong>+7.30%</strong> となる。
 分割の寄与は 5.19 ポイント、全体の 42% である。
@@ -368,11 +414,11 @@ AUC が最も高い特徴量（0.876）が BF<sub>1</sub> 最下位（−2.59%�
 
 <h2>6. 計算コスト</h2>
 
-<p>表 4 は RTX 4090 1 枚での 1 フレームあたりの実時間である。
+<p>表 5 は RTX 4090 1 枚での 1 フレームあたりの実時間である。
 ウォームアップ後に実フレームで測定した。</p>
 
 <table class="nobreak">
-  <caption><strong>表 4：</strong>1 枚あたりのコストと、それが買う利得。
+  <caption><strong>表 5：</strong>1 枚あたりのコストと、それが買う利得。
   効いてくる調整項は分割モデルの点グリッドだけである。</caption>
   <thead><tr><th>構成</th><th class="n">ミリ秒/枚</th>
     <th class="n">生の BF<sub>1</sub></th><th class="n">1 pt あたり</th></tr></thead>
@@ -401,11 +447,11 @@ grid 48 は grid 16 より 1 枚あたり 3,200 画素多く輪郭を見つけ�
 <h2>7. 限界</h2>
 
 <p><strong>本手法は深度モデルをまたいでは転移するが、データセットをまたいでは転移しない。</strong>
-表 5 は、NYUv2 で学習した選別器を ScanNet [12] と Hypersim [13] に適用した結果である
+表 6 は、NYUv2 で学習した選別器を ScanNet [12] と Hypersim [13] に適用した結果である
 （深度モデルは同一）。</p>
 
 <table class="nobreak">
-  <caption><strong>表 5：</strong>汎化。選別器は NYUv2 で学習しており、深度モデルは全行で同一である。</caption>
+  <caption><strong>表 6：</strong>汎化。選別器は NYUv2 で学習しており、深度モデルは全行で同一である。</caption>
   <thead><tr><th>評価データ</th><th class="n">選別なし</th>
     <th class="n">＋選別器</th><th class="n">適合率</th></tr></thead>
   <tbody>
