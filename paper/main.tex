@@ -458,6 +458,17 @@ appearing along a different axis.
 \section{Limitations}
 \label{sec:limitations}
 
+\textbf{Two datasets, because a boundary metric needs dense ground truth.}
+The base models we post-process are evaluated on five benchmarks: NYUv2, KITTI,
+ScanNet, ETH3D and DIODE. \bfone{} compares NEIGHBOURING pixels' depth ratio, so
+it needs ground truth dense enough for both to exist. On KITTI's sparse LiDAR
+only 11.2\% of adjacent pairs have both pixels valid. DIODE is dense (99.7\%
+indoors) but its standard evaluation protocol masks out pixels whose depth
+gradient exceeds a threshold, because its laser ground truth is unreliable at
+edges --- and that filter removes 99.4\% of the depth discontinuities indoors
+and 100\% outdoors, which is precisely what this method operates on. Of the five,
+\bfone{} is well defined on NYUv2 and ScanNet, and we evaluate on both.
+
 \textbf{The selector transfers across depth models but not across datasets.}
 Table~\ref{tab:generalisation} applies the NYUv2-trained selector to
 ScanNet~\cite{scannet} and Hypersim~\cite{hypersim}, using the same depth model.
