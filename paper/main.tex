@@ -466,7 +466,9 @@ only 11.2\% of adjacent pairs have both pixels valid. DIODE is dense (99.7\%
 indoors) but its standard evaluation protocol masks out pixels whose depth
 gradient exceeds a threshold, because its laser ground truth is unreliable at
 edges --- and that filter removes 99.4\% of the depth discontinuities indoors
-and 100\% outdoors, which is precisely what this method operates on. Of the five,
+and 100\% outdoors, which is precisely what this method operates on. We did not
+assess ETH3D, whose depth is laser ground truth distributed as a 46\,GB archive;
+whether \bfone{} is well defined on it is open. Of the four we did check,
 \bfone{} is well defined on NYUv2 and ScanNet, and we evaluate on both.
 
 \textbf{The selector transfers across depth models but not across datasets.}
