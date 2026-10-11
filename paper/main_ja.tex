@@ -1,0 +1,495 @@
+% 鋭化する場所を学習する — main.tex の日本語版（確認用）
+%
+% 体裁は main.tex と同一（IEEE 2 段組、会議テンプレート）。本文だけを日本語にした
+% もので、投稿物ではない。提出は英語版の main.tex。
+%
+% 日本語の組版には LuaLaTeX が要る。pdflatex では通らない:
+%     ./build_ja.sh      (lualatex を 2 パス)
+%
+% 数値は main.tex と完全に一致させること。片方だけ直すと必ずずれる。
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+% LuaLaTeX は Times (ptm) を TU エンコーディングで見つけられず Latin Modern に
+% 落ちる。英語版と字面を揃えるため、Times 互換の TeX Gyre Termes を明示する。
+\usepackage{fontspec}
+\setmainfont{texgyretermes}[
+  Extension=.otf, UprightFont=*-regular, BoldFont=*-bold,
+  ItalicFont=*-italic, BoldItalicFont=*-bolditalic]
+\usepackage{luatexja}
+\usepackage[haranoaji]{luatexja-preset}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+
+\newcommand{\bfone}{BF\textsubscript{1}}
+
+\begin{document}
+
+\title{鋭化する場所を学習する\\
+{\large 拡散ベース単眼深度推定に対する選択的境界精緻化}}
+
+\author{\IEEEauthorblockN{TODO 著者名}
+\IEEEauthorblockA{\textit{TODO 専攻・学科} \\
+\textit{TODO 大学}\\
+TODO 市, 国 \\
+TODO メールアドレス}}
+
+\maketitle
+
+\begin{abstract}
+拡散モデルに基づく単眼深度推定は面の精度は高いが、深度の不連続（物体境界）が
+ぼやける。分割モデルが見つけた輪郭で予測深度を鋭化すれば直りそうだが、
+すべての輪郭に鋭化を掛けると NYUv2 の境界 \bfone{} は 1.90\% 悪化する。
+本研究は測定によって、問題が輪郭の\emph{位置}ではないことを示す。真の深度段差から
+最寄りの輪郭までは中央値 1.00\,px である。壊れているのは\emph{どの輪郭を使うか}で、
+輪郭画素の 79.8\% は段差のない場所にある。正解データで正しい 4\% だけを残し、
+輪郭を 1 画素も動かさずに鋭化すると、効果は $-1.90\%$ から $+43.39\%$ へ符号が
+反転する。そこで本研究は修正操作を固定し、\emph{それをどこに掛けるか}だけを学習する。
+795 枚・16 分で学習した 193 万パラメータの選別器は、NYUv2 の \bfone{} を seed 4 本で
+$11.92 \pm 0.90\%$ 向上させる。さらに\emph{再学習なしで}、アーキテクチャも出力表現も
+異なる第二の深度モデルに適用でき、そちらでは $27.83 \pm 1.27\%$ 向上する。
+学習を伴わない対照 5 種を各モデル自身の予測で測定し、学習の寄与を 10.7 ポイントと
+17.4 ポイントと特定した。選別器と鋭化の追加コストは 1 枚あたり 30\,ms で、
+分割の点グリッドを粗くすれば分割コストの 20\% で利得の 95\% が得られる。
+併せて負の結果も報告する。本手法は深度モデルをまたいでは転移するが、
+データセットをまたいでは転移せず、4 通りの対処がいずれも失敗した。
+\end{abstract}
+
+\begin{IEEEkeywords}
+単眼深度推定, 深度境界, 後処理, 拡散モデル
+\end{IEEEkeywords}
+
+\section{はじめに}
+
+事前学習済みの拡散モデルを転用した単眼深度推定 \cite{marigold,lotus,marigoldv2} は
+画素単位の精度では強いが、生成モデルの持つ滑らかさを物体境界で引き継いでしまう。
+AbsRel が優秀でありながら、画像中のすべての遮蔽境界が数画素にわたってにじんでいる、
+ということが起こりうる。画素平均の指標はこれを検出しない。境界画素は画像のごく一部で、
+平らな面に支配された指標は問題なしと報告するからである。
+境界専用の指標なら検出できる \cite{depthpro}。
+
+深度モデルに手を入れずに済むため、境界を後処理で直す方針は魅力的である。
+先行研究は\emph{深度をどう動かすか}を学習してきた \cite{ramamonjisoa,sharpnet,edgeguided}。
+本研究は逆の分解を取る。\textbf{修正操作を固定し、それをどこに掛けるかだけを学習する。}
+
+この選択は経験的なものである。第 \ref{sec:diagnosis} 節では、分割モデル \cite{sam} が
+描いた輪郭すべてに鋭化を掛けると境界 \bfone{} が 1.90\% \emph{下がる}ことを測定する。
+同じ測定が理由も示す。輪郭の位置はすでに十分であり、一方で輪郭の 79.8\% は深度段差を
+まったく示していない。そこを鋭化しても滑らかな面を壊すだけである。位置を一切変えずに、
+正解データで正しい輪郭だけを選ぶと、効果は $-1.90\%$ から $+43.39\%$ へ動く。
+律速は位置精度ではなく\textbf{選別}である。
+
+本研究の貢献は次の 4 点である。
+
+\begin{enumerate}
+\item 後処理による境界鋭化の律速要因が選別であることを測定で特定した。輪郭を 1 画素も
+      動かさずに効果の符号を反転させるオラクルを含む（第 \ref{sec:diagnosis} 節）。
+\item 修正操作を固定して選別だけを学習する手法を提案した。これにより\textbf{学習が何に
+      寄与したかの帰属が明確}になる（第 \ref{sec:method} 節）。
+\item アーキテクチャ・パラメータ数・出力表現の異なる 2 つの深度モデルで評価した。
+      各 seed 4 本、学習を伴わない対照 5 種を\textbf{各モデル自身の予測で}
+      測定した（第 \ref{sec:experiments} 節）。
+\item 計算コストを分析し、追加分が 1 枚 30\,ms であること、粗い分割グリッドで
+      分割コストの 20\% から利得の 95\% が得られることを示した（第 \ref{sec:cost} 節）。
+\end{enumerate}
+
+第 \ref{sec:limitations} 節では、本手法がデータセットをまたいでは転移しないこと、
+およびその修復を 4 通り試みて失敗したことを報告する。
+
+\begin{figure*}[t]
+\centerline{\includegraphics[width=\textwidth]{figures/qualitative_a.png}}
+\caption{手法が何をしているか。上段は画像全体で、選別された輪郭の外側は何も
+動いていない。中段は 72\,px のズーム。ベースラインでは机の縁が数画素にわたって
+にじんでいるのに対し、鋭化後は段差が復元されている。下段は各深度マップが含む
+不連続エッジで、これが \bfone{} の比較対象である。緑は正解と一致、赤は偽、
+灰は取りこぼし。パネルにはそのフレームの AbsRel と対象フレーム中の順位を印字してあり、
+これが分割中の最良例ではないことを読者が確認できる。}
+\label{fig:qualitative}
+\end{figure*}
+
+\section{関連研究}
+
+\textbf{拡散ベースの単眼深度推定。}
+Marigold \cite{marigold} は Stable Diffusion を合成 RGB-D で微調整し、アフィン不変な
+単眼深度推定へ転用した。Lotus \cite{lotus} は拡散のスケジュールを取り除き、
+タイムステップを固定して 1 ステップで予測する。その後、1 ステップ化が手法を単純化すると
+同時に桁違いに高速化することが示された \cite{onestep}。本研究は、この系統の中で可能な限り
+離れた 2 つのモデルで評価する。一つは 213 億パラメータの拡散トランスフォーマで
+アフィン不変な log 深度を出力し、もう一つは 8.68 億パラメータの UNet で視差を出力する。
+
+\textbf{後処理としての境界鋭化。}
+Ramamonjisoa らの研究 \cite{ramamonjisoa} が最も近い。遮蔽境界の周囲の画素を再標本化する
+2 次元変位場を学習するもので、任意の深度推定器の出力に適用でき、NYUv2 の学習 795 枚・
+評価 654 枚という使い方まで本研究と同一である。SharpNet \cite{sharpnet} は遮蔽輪郭の回復を
+深度ネットワーク自身の学習に組み込む。Edge-guided 後処理 \cite{edgeguided} は自己教師ありの
+視差合成において境界を保存する。より最近では、NeRF による深度精緻化 \cite{nerfrefine} が
+edge F1 の相対 2.9\% 改善を報告している。これらはいずれも\emph{深度をどう動かすか}を学習する。
+著者らの知る限り、修正操作を固定して対象だけを学習する研究はなく、また促進可能な
+分割モデルを境界候補の供給源として用いる研究もない。
+
+\textbf{直接比較は行っていない。} \cite{ramamonjisoa} はコードが公開されているが
+学習済み重みの公開がなく、README に推論手順の記載もなく、PyTorch 0.4 以上を要求するため
+現行の PyTorch では動作しない。代わりに本研究自身の分割利用をアブレーションし
+（第 \ref{sec:experiments} 節）、外部分割がどれだけ寄与するかという関連する問いに答えた。
+\textbf{これは本手法のアブレーションであって先行研究との比較ではなく、そのように提示する
+こともしない。}
+
+\textbf{境界指標。}
+Depth Pro \cite{depthpro} のスケール不変な境界 \bfone{} を採用する。隣接画素間の深度の
+\emph{比}が閾値を超えたときに深度段差があると判定し、その閾値を掃引する指標である。
+本研究は新しい指標を提案しない。Lotus も本研究が用いる拡散トランスフォーマモデルも
+NYUv2 の \bfone{} を報告していないため、ベースラインは著者らが測定した。
+
+\textbf{深度のための分割。} Segment Anything \cite{sam} は、深度を事前情報としてマスクを
+精緻化する方向で利用されてきた。本研究はこれを逆方向に用いる。学習した選別器が選り分ける
+\emph{深度境界の候補}の供給源としてである。
+
+\section{診断：律速は選別である}
+\label{sec:diagnosis}
+
+\subsection{修正操作}
+$d$ を予測深度、$C$ を輪郭画素の集合とする。障壁鋭化は、$C$ の周囲 $\pm 2$\,px の帯を捨て、
+帯の外側から領域ラベルを内側へ伝播させて輪郭の両側が帯の内部で接するようにし
+（一方が他方へ漏れ込まないように）、捨てた各画素を半径 3\,px 以内の\emph{自分の側}の
+局所平均で埋め直す。帯を捨てるのは、拡散モデルが境界をまたいで値を内挿するためである。
+片側だけから埋め直すことで、この混ざりを除去する。この操作は設定値を 2 つ持つだけで、
+学習するものは何もない。充填半径は帯より大きくなければならない。さもなければ埋める元が
+残らず、何も起きない無操作になる。
+
+\subsection{全輪郭に掛けると失敗する}
+表 \ref{tab:diagnosis} は、213 億パラメータの拡散トランスフォーマ深度モデルを土台に、
+Segment Anything が描く輪郭すべてにこの操作を掛けた結果である。境界 \bfone{} は 1.90\% 低下する。
+
+\begin{table}[t]
+\caption{後処理による鋭化が失敗する理由と、何がそれを直すか。NYUv2 654 枚。
+オラクル選別は正解データを用いるが、輪郭は 1 画素も動かさない。}
+\label{tab:diagnosis}
+\centering
+\begin{tabular}{lrr}
+\toprule
+鋭化した輪郭 & 残存率 & 生の \bfone{} \\
+\midrule
+分割モデルの全輪郭 & 100\% & $-1.90\%$ \\
+オラクル：正しいものだけ & 4\% & $\mathbf{+43.39\%}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{位置精度は問題ではない}
+真の深度不連続それぞれから最寄りの輪郭までの距離を測ると、中央値 1.00\,px、
+76.9\% が 2\,px 以内である。輪郭は境界のある場所にある。壊れているのは逆方向で、
+\textbf{輪郭画素の 79.8\% は深度段差のない場所にある}——壁紙の柄、床の目地、ポスターの縁である。
+そこを鋭化することは、滑らかな面の帯を捨てて、値の一致する両側から埋め直すことであり、
+雑音を加える以外の効果がない。
+
+\subsection{正解で選別すると符号が反転する}
+真の不連続から 1\,px 以内にある輪郭画素（全体の 4\%）だけを残し、残した輪郭はすべて
+元の位置に置いたまま鋭化すると、生の効果は $-1.90\%$ から $+43.39\%$ へ動く
+（表 \ref{tab:diagnosis}）。輪郭は一つも動いていない。変わったのは集合だけである。
+これは選別が律速要因であることを分離して示すと同時に、学習する選別器の目標を定める。
+
+\section{手法}
+\label{sec:method}
+
+\begin{figure}[t]
+\centerline{\includegraphics[width=\columnwidth]{figures/pipeline.png}}
+\caption{学習するのは選別器だけ。深度推定モデルも分割モデルも凍結し、
+修正操作はパラメータを持たない固定操作である。したがって利得は選別のみに帰属する。}
+\label{fig:pipeline}
+\end{figure}
+
+図 \ref{fig:pipeline} にパイプラインを示す。深度推定モデルと分割モデルは凍結する。
+修正は第 \ref{sec:diagnosis} 節の固定操作である。学習する構成要素は選別器だけである。
+
+\textbf{入力と出力。} 選別器は 4 段の U-Net で、パラメータ数は 1{,}928{,}993 である。
+RGB 画像（3 チャネル）、予測深度（1）、輪郭マスク（1）を入力し、画素ごとに 1 つの
+ロジットを出す。予測深度は\textbf{画像ごとに標準化}する。これらのモデルはアフィン不変で
+あり、絶対的な水準と尺度には情報がないため、学習時と推論時でここが食い違っても何も壊れず、
+最終的な指標だけが悪化する。log 深度ではなく視差を出すモデルに対しては、先に $-\log d$ を
+適用する。視差は深度が小さいほど大きくなるため、そのまま与えると符号の反転した信号を
+渡すことになるからである。
+
+\textbf{残存率。} 確率の閾値ではなく、\textbf{画像ごとに上位 6\%} の輪郭画素を残す。
+閾値を固定すると、場面に含まれる輪郭の量によって残す量が変わり、鋭化が使う予算が
+フレームごとに動いてしまう。
+
+\textbf{損失と学習。} 輪郭画素だけにマスクした二値交差エントロピーを用いる。
+輪郭を含まない画像の 88\% は、選別器に問うていない問題である。輪郭画素は、正解深度の
+不連続から 1\,px 以内にあれば正例とする。\textbf{正解データはこのラベル生成にのみ用い、
+推論経路には一切現れない。} 学習は NYUv2 の学習用 795 枚をシーン単位で分割して行い、
+RTX 4090 1 枚で 16 分・VRAM 3.5\,GB を要する。評価用の 654 枚には一度も触れない。
+
+\section{実験}
+\label{sec:experiments}
+
+\subsection{設定}
+NYUv2 \cite{nyuv2} の評価用 654 枚で評価する。学習フレームとはシーンが重複しない。
+指標は Depth Pro \cite{depthpro} のスケール不変な境界 \bfone{} で、5\% から 25\% までの
+11 点の閾値で掃引する。各土台モデル自身の未鋭化の予測に対する \bfone{} の相対変化を
+「生の増分」として報告する。予測は採点前にそれぞれの空間——一方は log 深度、他方は視差——で
+正解に整合させる。この整合はすべての変種に等しく作用する。
+
+\subsection{主結果}
+表 \ref{tab:main} は、アーキテクチャもパラメータ規模も出力表現も共有しない 2 つの
+深度モデルでの結果である。\textbf{学習した選別器は 1 つだけ}で、第一のモデルの予測で
+学習した。第二のモデルには\textbf{再学習なしで}適用し、視差から log 深度への変換だけを
+加えている。
+
+\begin{table}[t]
+\caption{主結果。各 seed 4 本、$\pm$ は標準偏差。両モデルに同一の選別器を適用しており、
+学習は第一のモデルでのみ行った。}
+\label{tab:main}
+\centering
+\begin{tabular}{lrrr}
+\toprule
+土台の深度モデル & \bfone{} & 選別なし & ＋選別器 \\
+\midrule
+DiT・213 億・log 深度 & 0.0884 & $-1.90\%$ & $\mathbf{+11.92 \pm 0.90\%}$ \\
+UNet・8.68 億・視差 & 0.0693 & $+10.31\%$ & $\mathbf{+27.83 \pm 1.27\%}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+第一のモデルでは seed 4 本すべてが $+10\%$ を超え、95\% 信頼区間の下限は $+10.49\%$ である。
+画素単位の精度は劣化しない。AbsRel は 0.03881 から 0.03860 へ、$\delta_1$ は 0.97969 から
+0.98000 へ動く。いずれも変化は小さく、\textbf{境界のために精度を犠牲にしていない}
+ということのみを主張する。
+
+フレーム単位で採点すると、平均が少数のフレームに支えられているのではないことが分かる。
+採点できた 651 枚のうち \textbf{493 枚（75.7\%）で改善}し、相対利得の中央値は $+14.13\%$、
+四分位は $+0.32\%$ と $+34.38\%$ である。図 \ref{fig:qualitative} はこの分布の中ほどに
+あるフレームである。
+
+\subsection{もう一つの境界指標}
+一つの指標でしか見えない改善は、その指標の定義による改善かもしれない。そこで
+\textbf{Soft Edge Error} でも測った。主たる土台モデルの著者自身が使う境界指標で、
+その実装から移植した。SEE$_k$ は、正解の境界画素において、$k \times k$ 近傍のどれかの
+正解深度との絶対誤差の最小値を平均する。境界のズレは許し、にじみは罰する。
+\bfone{} と違って深度単位の絶対誤差なのでスケール不変ではなく、採点前に整合させる必要が
+ある。\textbf{小さいほど良い。}
+
+\begin{table}[t]
+\caption{Soft Edge Error。生の \bfone{} が $+12.49\%$ / $+28.18\%$ を出す
+チェックポイントでの値。小さいほど良く、\%\ は各モデル自身のベースラインに対する相対変化。}
+\label{tab:see}
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+& \bfone{} & SEE$_3$ & SEE$_5$ & SEE$_7$ \\
+\midrule
+\multicolumn{5}{l}{\emph{DiT・213 億}} \\
+ベースライン & 0.0884 & 0.1148 & 0.0882 & 0.0758 \\
+＋選別器 & $+12.49\%$ & $-3.34\%$ & $-2.89\%$ & $-2.39\%$ \\
+移設対照 & $-0.50\%$ & $+0.32\%$ & $+0.46\%$ & $+0.52\%$ \\
+オラクル & $+209.8\%$ & $-11.44\%$ & $-5.09\%$ & $-2.91\%$ \\
+\midrule
+\multicolumn{5}{l}{\emph{UNet・8.68 億}} \\
+ベースライン & 0.0693 & 0.1403 & 0.1147 & 0.1014 \\
+＋選別器 & $+28.18\%$ & $-5.18\%$ & $-5.54\%$ & $-5.48\%$ \\
+移設対照 & $-0.57\%$ & $+0.20\%$ & $+0.23\%$ & $+0.24\%$ \\
+オラクル & $+279.0\%$ & $-12.96\%$ & $-9.81\%$ & $-8.73\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{2 つの指標は、両モデルのすべての変種で一致する。} 選別器は両方で改善、
+移設対照は両方で悪化、オラクルは両方で最良。したがって\textbf{この改善は \bfone{} の
+定義の産物ではない}。
+
+ただし変化の大きさは比較できない。SEE は境界画素の絶対誤差の平均で、その場所での
+モデル自身の深度値の精度が下限になる。だから \bfone{} を $209.8\%$ 上げるオラクルでも
+SEE$_5$ は $5.09\%$ しか下がらない。また $k$ が大きいほど改善が小さくなる
+（オラクルで $-11.44\%$ から $-2.91\%$）。大きい $k$ ほどズレを許すのだから、
+そうなるのが定義どおりである。
+
+\subsection{対照}
+利得は学習ではなく鋭化そのものから来ているのかもしれず、あるいは単に疎であることから
+来ているのかもしれない。表 \ref{tab:controls} は、学習を伴わない 5 つの代替手段を、
+\textbf{各土台モデル自身の予測で}測定したものである。
+
+\begin{table}[t]
+\caption{学習を伴わない対照。土台モデルごとに別々に測定した、生の \bfone{} の変化。}
+\label{tab:controls}
+\centering
+\begin{tabular}{lrr}
+\toprule
+選別の方法 & DiT 213 億 & UNet 8.68 億 \\
+\midrule
+なし（全輪郭） & $-1.90\%$ & $+10.31\%$ \\
+移設（同じ疎さ・違う場所） & $-0.50\%$ & $-0.57\%$ \\
+画素ランダム（同率） & $-20.35\%$ & $-19.70\%$ \\
+ブロックランダム（同率） & $-1.48\%$ & $-0.67\%$ \\
+手作り特徴の閾値（最良） & $+1.25\%$ & $+10.46\%$ \\
+\midrule
+\textbf{学習した選別器} & $\mathbf{+11.92\%}$ & $\mathbf{+27.83\%}$ \\
+\textbf{学習の寄与} & $\mathbf{10.7}$\,pt & $\mathbf{17.4}$\,pt \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+手作り特徴の対照は、予測深度の log 勾配の局所的な記述子に閾値を掛けるものである。
+その特徴量は、順位付けの良さではなく\textbf{最終指標で選んだ}。候補 4 つを測ると
+AUC の順位と \bfone{} の順位は\emph{逆転}し、AUC が最も低い特徴量（0.801）が
+\bfone{} 最良（$+1.25\%$）を、AUC が最も高い特徴量（0.876）が \bfone{} 最下位
+（$-2.59\%$）を与える。代理指標で選んだ対照は弱すぎることになり、
+\textbf{弱い対照は比較される手法を良く見せるだけ}である。
+
+画素ランダムの選別が両モデルでほぼ同じ値（$-20.35\%$ と $-19.70\%$）を示すのは当然である。
+この対照が測っているのは鋭化操作の性質であって、深度モデルの性質ではない。
+
+\subsection{分割モデルの寄与}
+分割モデルを完全に外し、選別器が RGB と深度から自力で境界を見つけ、有効画素すべてを
+候補とする設定では、$+11.92\%$ ではなく $+7.30\%$ となる。分割の寄与は 5.19 ポイント、
+全体の 42\% である。その機構は適合率ではなく\textbf{再現率}にある。分割輪郭上で数えると
+真の段差は 1 枚あたり 1{,}221 画素で、予算 1{,}207 画素はその 98.9\% を覆える。
+画像全体で数えると 3{,}042 画素あり、同じ予算では再現率の上限が 39.7\% になる。
+\textbf{分割モデルは正解の集合を絞ることによって寄与している。}
+
+\section{計算コスト}
+\label{sec:cost}
+
+表 \ref{tab:cost} は RTX 4090 1 枚での 1 フレームあたりの実時間である。
+ウォームアップ後に実フレームで測定した。
+
+\begin{table}[t]
+\caption{1 枚あたりのコストと、それが買う利得。効いてくる調整項は分割モデルの
+点グリッドだけである。}
+\label{tab:cost}
+\centering
+\begin{tabular}{lrrr}
+\toprule
+構成 & ms/枚 & 生の \bfone{} & 1\,pt あたり \\
+\midrule
+深度推定モデルのみ & 495 & --- & --- \\
+＋選別器（分割なし） & 525 & $+7.30\%$ & \textbf{72} \\
+＋選別器・grid 16 & \textbf{1{,}059} & $\mathbf{+11.32\%}$ & 94 \\
+＋選別器・grid 48 & 3{,}128 & $+11.92\%$ & 262 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+選別器は 12.0\,ms、鋭化は 18.3\,ms であり、本研究が追加するのは 30.3\,ms——
+深度推定モデル自身の 495\,ms の 6\% である。それ以外をすべて支配するのは分割モデルで、
+点グリッドに応じて 534\,ms から 2{,}603\,ms を要する。
+
+\textbf{粗いグリッドで足りる。} grid 16 は grid 48 の利得の 95\% を、コストの 20\% で
+達成し、パイプライン全体を 3.0 倍速く、\bfone{} 1 ポイントあたり 2.8 倍安くする。
+適合率はグリッドをまたいで逆順に並ぶ（grid 16・32・48 で 51.6\%・50.6\%・50.2\%）。
+これは粗いグリッドが何をしているかを物語る。大きな物体の輪郭を辿り、壁紙の柄や
+床の目地を取りこぼすため、選別器に渡される候補集合が最初から綺麗なのである。
+grid 48 は grid 16 より 1 枚あたり 3{,}200 画素多く輪郭を見つけるが \bfone{} は
+ほとんど動かず、その大半が偽陽性であることを意味する。これは前節のアブレーションと
+同じ機構——分割は正解の集合を絞ることで寄与する——が別の軸で現れたものである。
+
+\section{限界}
+\label{sec:limitations}
+
+\textbf{評価が 2 データセットなのは、境界指標が密な GT を要求するからである。}
+本研究が後処理する土台モデルは、NYUv2・KITTI・ScanNet・ETH3D・DIODE の 5 つで
+評価されている。\bfone{} は\emph{隣接画素}の深度比を比較するので、両方が有効である
+だけの密度を要し、5 つのうち 3 つはそれを満たさない。KITTI の LiDAR では隣接ペアが
+両方有効なのは 13.2\%、ETH3D（レーザー点群を 2440 万画素の DSLR 画像へ投影）では
+4.1\% にとどまる。DIODE は密（屋内 99.7\%）だが、レーザー GT が境界で信頼できないため、
+標準プロトコルが深度勾配の大きい画素を除外する。そのフィルタは\textbf{深度不連続の
+99.4\%（屋内）・100\%（屋外）を取り除く}——本手法が対象とするもの、そのものである。
+5 つのうち \bfone{} が定義できるのは NYUv2 と ScanNet であり、本研究はその両方で評価した。
+
+\textbf{本手法は深度モデルをまたいでは転移するが、データセットをまたいでは転移しない。}
+表 \ref{tab:generalisation} は、NYUv2 で学習した選別器を ScanNet \cite{scannet} と
+Hypersim \cite{hypersim} に適用した結果である（深度モデルは同一）。
+
+\begin{table}[t]
+\caption{汎化。選別器は NYUv2 で学習しており、深度モデルは全行で同一である。}
+\label{tab:generalisation}
+\centering
+\begin{tabular}{lrrr}
+\toprule
+評価データ & 選別なし & ＋選別器 & 適合率 \\
+\midrule
+NYUv2（在ドメイン） & $-1.90\%$ & $\mathbf{+11.92\%}$ & 50.2\% \\
+ScanNet & $+3.26\%$ & $+2.81\%$ & 17.4\% \\
+Hypersim & $+2.28\%$ & $-4.64\%$ & 55.8\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+いずれの未見データセットでも、選別器は全輪郭を使う場合に及ばない。4 通りの対処を試し、
+4 通りとも失敗した。RGB チャネルを落とす（転移はむしろ悪化した）、別データセットで
+学習する、残存率を 2\% から 20\% まで掃引する（ScanNet ではどの設定も選別なしに届かない）、
+両者を等量混合して学習する（在ドメインの結果を損ない、転移も改善しない）。
+学習データを 795 枚から 1{,}590 枚へ増やすと在ドメインの結果が悪化したため、
+\textbf{データ量も律速ではない}。
+
+これを報告するのは、この分野の先行研究が行う主張に関わるからである。
+\textbf{モデル非依存な後処理が、それゆえにデータセット非依存であるとは限らない。}
+2 種類の汎化は明らかに分離する。
+
+\textbf{上限までの余地。} 第 \ref{sec:diagnosis} 節のオラクルは $+43.39\%$ に達するのに対し、
+本手法は $+11.92\%$ であり、選別が与えうるものの 71\% が未回収である。
+差は適合率にある（50.2\% 対オラクルの 100\%）。
+
+\textbf{指標の範囲。} 改善しているのは境界指標である。AbsRel と $\delta_1$ の変化は
+改善と主張するには小さすぎ、劣化していないことのみを主張する。
+
+\textbf{ラベルと指標が定義を共有している。} 教師は「正解の深度段差から 1\,px 以内」であり、
+\bfone{} も正解の深度段差との一致を測る。正解データは推論に一切現れず、評価シーンは
+学習と重複しないが、この対応関係は念頭に置いて読まれるべきである。
+
+\section{おわりに}
+
+単眼深度に対する後処理の境界鋭化が失敗するのは、輪郭の位置が悪いからではなく、
+その大半が深度段差を示していないからである。修正操作を固定して対象だけを学習することで、
+利得の帰属が明確になり、1 枚あたり 30\,ms・193 万パラメータで、再学習なしに深度モデルを
+またいで転移する。データセットをまたいでは転移せず、著者らはそれを修復できなかった。
+
+\begin{thebibliography}{00}
+
+\bibitem{marigold} B.~Ke, A.~Obukhov, S.~Huang, N.~Metzger, R.~C.~Daudt, and
+K.~Schindler, ``Repurposing diffusion-based image generators for monocular depth
+estimation,'' in \emph{CVPR}, 2024.
+
+\bibitem{lotus} J.~He et al., ``Lotus: Diffusion-based visual foundation model
+for high-quality dense prediction,'' arXiv:2409.18124, 2024.
+
+\bibitem{marigoldv2} TODO: 主たる土台モデル（213 億パラメータの拡散トランスフォーマ
+深度モデル）の正式な題目と掲載先。
+
+\bibitem{onestep} G.~Garcia, K.~Abou~Zeid, C.~Schmidt, D.~de~Geus,
+A.~Hermans, and B.~Leibe, ``Fine-tuning image-conditional diffusion models is
+easier than you think,'' arXiv:2409.11355, 2024.
+
+\bibitem{depthpro} A.~Bochkovskii et al., ``Depth Pro: Sharp monocular metric
+depth in less than a second,'' in \emph{ICLR}, 2025.
+
+\bibitem{ramamonjisoa} M.~Ramamonjisoa, Y.~Du, and V.~Lepetit, ``Predicting
+sharp and accurate occlusion boundaries in monocular depth estimation using
+displacement fields,'' in \emph{CVPR}, 2020.
+
+\bibitem{sharpnet} M.~Ramamonjisoa and V.~Lepetit, ``SharpNet: Fast and accurate
+recovery of occluding contours in monocular depth estimation,'' in \emph{ICCV
+Workshops}, 2019.
+
+\bibitem{edgeguided} TODO: 著者・掲載先を要確認。``Edge-guided occlusion
+fading reduction for a light-weighted self-supervised monocular depth
+estimation,'' arXiv:1911.11705.
+
+\bibitem{nerfrefine} TODO: 著者・掲載先を要確認。``Bayesian monocular depth
+refinement via neural radiance fields,'' arXiv:2601.03869.
+
+\bibitem{sam} A.~Kirillov et al., ``Segment Anything,'' in \emph{ICCV}, 2023.
+
+\bibitem{nyuv2} N.~Silberman, D.~Hoiem, P.~Kohli, and R.~Fergus, ``Indoor
+segmentation and support inference from RGBD images,'' in \emph{ECCV}, 2012.
+
+\bibitem{scannet} A.~Dai, A.~X.~Chang, M.~Savva, M.~Halber, T.~Funkhouser, and
+M.~Nie{\ss}ner, ``ScanNet: Richly-annotated 3D reconstructions of indoor
+scenes,'' in \emph{CVPR}, 2017.
+
+\bibitem{hypersim} M.~Roberts et al., ``Hypersim: A photorealistic synthetic
+dataset for holistic indoor scene understanding,'' in \emph{ICCV}, 2021.
+
+\end{thebibliography}
+
+\end{document}
