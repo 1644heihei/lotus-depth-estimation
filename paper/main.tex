@@ -461,14 +461,14 @@ appearing along a different axis.
 \textbf{Two datasets, because a boundary metric needs dense ground truth.}
 The base models we post-process are evaluated on five benchmarks: NYUv2, KITTI,
 ScanNet, ETH3D and DIODE. \bfone{} compares NEIGHBOURING pixels' depth ratio, so
-it needs ground truth dense enough for both to exist. On KITTI's sparse LiDAR
-only 11.2\% of adjacent pairs have both pixels valid. DIODE is dense (99.7\%
-indoors) but its standard evaluation protocol masks out pixels whose depth
-gradient exceeds a threshold, because its laser ground truth is unreliable at
-edges --- and that filter removes 99.4\% of the depth discontinuities indoors
-and 100\% outdoors, which is precisely what this method operates on. We did not
-assess ETH3D, whose depth is laser ground truth distributed as a 46\,GB archive;
-whether \bfone{} is well defined on it is open. Of the four we did check,
+it needs ground truth dense enough for both to exist, and on three of the five
+it is not. KITTI's LiDAR leaves 13.2\% of adjacent pairs with both pixels valid;
+ETH3D, which projects a laser point cloud onto 24-megapixel DSLR frames, leaves
+4.1\%. DIODE is dense (99.7\% indoors), but its standard evaluation protocol
+masks out pixels whose depth gradient exceeds a threshold, because its laser
+ground truth is unreliable at edges --- and that filter removes 99.4\% of the
+depth discontinuities indoors and 100\% outdoors, which is precisely what this
+method operates on. Of the five,
 \bfone{} is well defined on NYUv2 and ScanNet, and we evaluate on both.
 
 \textbf{The selector transfers across depth models but not across datasets.}
