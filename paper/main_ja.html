@@ -224,7 +224,7 @@ Segment Anything が描く輪郭すべてにこの操作を掛けた結果であ
 <h2>4. 手法</h2>
 
 <figure class="nobreak">
-<svg viewBox="0 0 700 330" role="img" aria-label="学習するのは選別器だけ" style="width:100%;height:auto">
+<svg viewBox="0 0 700 372" role="img" aria-label="学習するのは選別器だけ" style="width:100%;height:auto">
   <defs>
     <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M0 0L10 5L0 10z" fill="#555b66"/>
@@ -236,7 +236,7 @@ Segment Anything が描く輪郭すべてにこの操作を掛けた結果であ
     <path d="M200 146V176" marker-end="url(#ar)"/>
     <path d="M500 146V176" marker-end="url(#ar)"/>
     <path d="M350 234V258" marker-end="url(#ar)"/>
-    <path d="M350 300V318" marker-end="url(#ar)" stroke-dasharray="0"/>
+    <path d="M350 300V322" marker-end="url(#ar)"/>
     <path d="M50 121H30V286H150" marker-end="url(#ar)"/>
   </g>
   <g font-family="Yu Gothic UI, Yu Gothic, sans-serif">
@@ -261,6 +261,8 @@ Segment Anything が描く輪郭すべてにこの操作を掛けた結果であ
 
     <text x="36" y="206" font-size="11" fill="#555b66">予測深度</text>
     <text x="36" y="221" font-size="11" fill="#555b66">（修正対象）</text>
+    <rect x="230" y="322" width="240" height="32" rx="6" fill="none" stroke="#555b66" stroke-width="1.2"/>
+    <text x="350" y="343" text-anchor="middle" font-size="13" fill="#16181d">出力：鋭化された深度</text>
   </g>
 </svg>
 <figcaption><strong>図 2：学習するのは選別器だけ。</strong>

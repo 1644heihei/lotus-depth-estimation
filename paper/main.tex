@@ -1,17 +1,18 @@
 % Learning Where to Sharpen
-% Drafted for IIAI AAI / SCAI. Swap \documentclass for the venue template when it
-% arrives; nothing below depends on IEEEtran beyond the two-column environment.
+% IIAI AAI 2026-Winter, SCAI track, ICT full paper (6 pages, IEEE CPS two-column).
+% Built on the venue's own template: IEEE-conference-template-062824.tex, which is
+% \documentclass[conference]{IEEEtran}. The template's CRITICAL note - no symbols,
+% special characters, footnotes or math in the title or the abstract - is why the
+% abstract spells out "percent" and "standard deviation" rather than using % and \pm.
 \documentclass[conference]{IEEEtran}
 \IEEEoverridecommandlockouts
 
+% Beyond the template's own list: booktabs, for the rules in the tables.
 \usepackage{cite}
-\usepackage{amsmath,amssymb}
+\usepackage{amsmath,amssymb,amsfonts}
 \usepackage{graphicx}
+\usepackage{textcomp}
 \usepackage{booktabs}
-\usepackage{url}
-\usepackage{tikz}
-\usetikzlibrary{arrows.meta,positioning,calc}
-\usepackage[hidelinks]{hyperref}
 
 \newcommand{\bfone}{BF\textsubscript{1}}
 
@@ -19,8 +20,10 @@
 
 \title{Learning Where to Sharpen: Selective Boundary\\Refinement for Diffusion-Based Monocular Depth}
 
-\author{\IEEEauthorblockN{TODO Author}
-\IEEEauthorblockA{TODO Affiliation\\
+\author{\IEEEauthorblockN{TODO Given Name Surname}
+\IEEEauthorblockA{\textit{TODO dept. name of organization} \\
+\textit{TODO name of organization}\\
+TODO City, Country \\
 TODO email}}
 
 \maketitle
@@ -29,22 +32,23 @@ TODO email}}
 Diffusion-based monocular depth estimators produce accurate surfaces but blurred
 depth discontinuities. A natural remedy is to sharpen the predicted depth at
 contours found by a segmentation model, yet applying a barrier-sharpening
-operation at every contour \emph{lowers} boundary \bfone{} by 1.90\% on NYUv2.
-We show by measurement that the bottleneck is not where the contours are --- a
-true depth step is a median 1.00\,px from the nearest contour --- but which
-contours to use: 79.8\% of them lie where no depth step exists. Keeping only the
-correct 4\% with ground truth, without moving a single contour, turns $-1.90\%$
-into $+43.39\%$. We therefore fix the repair operation and learn only
-\emph{where} to apply it. A 1.9M-parameter selector trained for 16 minutes on
-795 frames raises \bfone{} by $11.92 \pm 0.90\%$ on NYUv2 over four seeds, and
+operation at every contour lowers boundary F1 by 1.90 percent on NYUv2. We show
+by measurement that the bottleneck is not where the contours are, since a true
+depth step is a median of one pixel from the nearest contour, but which contours
+to use: 79.8 percent of them lie where no depth step exists. Keeping only the
+correct 4 percent with ground truth, without moving a single contour, turns a
+loss of 1.90 percent into a gain of 43.39 percent. We therefore fix the repair
+operation and learn only where to apply it. A selector of 1.9 million
+parameters, trained for 16 minutes on 795 frames, raises boundary F1 by 11.92
+percent on NYUv2 over four seeds with a standard deviation of 0.90, and
 transfers with no retraining to a second depth model of a different
-architecture and output representation, raising its \bfone{} by $27.83 \pm
-1.27\%$. Five training-free controls, measured on each model's own predictions,
-place the learning's contribution at 10.7 and 17.4 points. The selector and the
-repair add 30\,ms per frame, and a coarse segmentation grid delivers 95\% of
-the gain at 20\% of the segmentation cost. We also report a negative result:
-the selector transfers across depth models but not across datasets, and four
-remedies failed to fix it.
+architecture and output representation, raising its boundary F1 by 27.83
+percent with a standard deviation of 1.27. Five training-free controls, measured
+on each model's own predictions, place the learning's contribution at 10.7 and
+17.4 points. The selector and the repair add 30 milliseconds per frame, and a
+coarse segmentation grid delivers 95 percent of the gain at 20 percent of the
+segmentation cost. We also report a negative result: the selector transfers
+across depth models but not across datasets, and four remedies failed to fix it.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -211,37 +215,7 @@ and sets the target for a learned selector.
 \label{sec:method}
 
 \begin{figure}[t]
-\centering
-\begin{tikzpicture}[
-  font=\small,
-  box/.style={draw, rounded corners=2pt, align=center, inner sep=4pt,
-              minimum height=7mm, text width=58mm},
-  hot/.style={box, draw=blue!65!black, very thick, fill=blue!6},
-  ar/.style={-{Latex[length=2mm]}, thick}
-]
-\node[box] (in)  {Input: one RGB image};
-\node[box, below=5mm of in, xshift=-16mm, text width=30mm] (mv2)
-     {Depth model\\(frozen)};
-\node[box, below=5mm of in, xshift=16mm, text width=30mm] (sam)
-     {Segmentation\\(frozen)};
-\node[hot, below=7mm of in, yshift=-12mm] (sel)
-     {\textbf{Selector} (U-Net, 1.9M) --- \emph{trained}\\
-      keeps the top 6\% of contour pixels};
-\node[box, below=5mm of sel] (sh)
-     {Sharpening (fixed, no parameters)\\
-      discard $\pm 2$\,px, refill from each side};
-\node[box, below=5mm of sh, text width=42mm] (out) {Output: sharpened depth};
-
-\draw[ar] (in) -- (mv2);
-\draw[ar] (in) -- (sam);
-\draw[ar] (mv2) -- (sel.north -| mv2);
-\draw[ar] (sam) -- (sel.north -| sam);
-\draw[ar] (sel) -- (sh);
-\draw[ar] (sh)  -- (out);
-\draw[ar] (mv2.west) -- ++(-5mm,0) |- (sh.west);
-\node[anchor=east, font=\scriptsize, align=right] at ($(sh.west)+(-6mm,5mm)$)
-     {predicted\\depth};
-\end{tikzpicture}
+\centerline{\includegraphics[width=\columnwidth]{figures/pipeline.png}}
 \caption{Only the selector is trained. The depth model and the segmentation
 model are frozen, and the repair is a fixed operation with no parameters, so
 the gain is attributable to the selection alone.}
