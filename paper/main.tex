@@ -43,7 +43,7 @@ window. Keeping with ground truth only the 6.07 percent that lie within one pixe
 of a true step, without moving a single contour, turns a loss of 1.90 percent
 into a gain of 43.39 percent. We therefore fix the repair operation and learn
 only where to apply it. A selector of 1.9 million parameters, trained for 16
-minutes on 795 frames, raises boundary F1 by 11.92 percent on NYUv2 over four
+minutes on 654 NYUv2 frames, raises boundary F1 by 11.92 percent over four
 seeds with a standard deviation of 0.90, and the same four selectors, applied
 with no retraining to a second depth model of a different architecture and
 output representation, raise its boundary F1 by 27.83 percent with a standard
@@ -113,10 +113,11 @@ selected contours moves. Middle: a 72\,px crop --- the baseline's desk edge is
 spread over several pixels, the sharpened map restores the step. Bottom: the
 depth discontinuities each map contains, which is what \bfone{} compares; green
 agrees with ground truth, red is invented, grey is missed. The frame is ranked
-41st of the 201 frames whose AbsRel is at or below 0.06 --- the most accurate
-31\% of the split, the median being 0.0835 --- ordered by ABSOLUTE \bfone{}
-gain; by relative gain its $+16.1\%$ sits near the split's median of
-$+14.13\%$. Panels state each frame's AbsRel and rank so that a
+33rd of the 326 frames whose AbsRel is at or below the split's median of
+0.0303, ordered by ABSOLUTE \bfone{} gain; by relative gain its $+14.36\%$
+sits near the split's median of $+13.15\%$. We restrict the figure to the more
+accurate half so that it shows sharpening a good prediction rather than
+rescuing a broken one. Panels state each frame's AbsRel and rank so that a
 reader can see which part of the distribution is being shown.}
 \label{fig:qualitative}
 \end{figure*}
@@ -219,7 +220,7 @@ segmentation contours and moves none of them.}
 \centering
 \begin{tabular}{lrr}
 \toprule
-Contours sharpened & share kept & raw \bfone{} \\
+Contours sharpened & share kept & \bfone{} change \\
 \midrule
 all segmentation contours & 100\% & $-1.90\%$ \\
 oracle selection, within 1\,px of a step & 6.07\% & $\mathbf{+43.39\%}$ \\
@@ -244,7 +245,7 @@ state both. The 79.8\% uses an eight-pixel window, which is generous; the
 selection below uses one pixel, which is strict. Of the 22{,}167 segmentation
 contour pixels in an average frame --- 10.6\% of its valid pixels --- 1{,}345,
 or 6.07\%, lie within 1\,px of a true discontinuity. An oracle that keeps exactly
-those, and leaves every kept contour where it is, moves the raw effect from
+those, and leaves every kept contour where it is, moves the effect from
 $-1.90\%$ to $+43.39\%$
 (Table~\ref{tab:diagnosis}). No contour moves; only the set changes. This
 isolates selection as the binding constraint and sets the target for a learned
@@ -282,7 +283,9 @@ what that approximation is worth.
 \textbf{Retention.} We keep the top 6\% of contour pixels per image rather than
 thresholding the probability. A fixed threshold keeps a different amount
 depending on how many contours a scene happens to contain, so the budget the
-repair spends would drift from frame to frame.
+repair spends would drift from frame to frame. The budget is 6\% because that is
+the positive rate: on the training frames, 6.07\% of contour pixels lie within
+1\,px of a true step. It is not fitted to the test split.
 
 \textbf{Loss and training.} Binary cross-entropy masked to contour pixels; the
 89\% of the valid image that carries no contour is not a question the selector
@@ -295,10 +298,12 @@ for 15, 20 and 25\%. Raising it thins the positives --- from 6.07\% of contour
 pixels to 2.13\% --- so the fixed budget is then spent mostly on negatives.
 Nothing in this work is selected on the test split except where
 Sec.~\ref{sec:controls} says otherwise, which is a control and not the method. Ground truth is used
-only to generate these labels and never appears in the inference path. Training
-uses the 795 NYUv2 training frames with a scene-disjoint validation split, takes
-16 minutes and 3.5\,GB of VRAM on one RTX 4090, and never touches the 654-frame
-test set.
+only to generate these labels and never appears in the inference path. The 795
+NYUv2 training frames are split by scene into 654 for training and 141 for
+validation; the deployed checkpoint is the best-validation epoch and has seen
+only those 654, which are a different set from the 654 test frames. Training
+takes 16 minutes and 3.5\,GB of VRAM on one RTX 4090 and never touches the test
+set.
 
 \section{Experiments}
 \label{sec:experiments}
@@ -312,7 +317,7 @@ a 300-frame scene-level hold-out of Hypersim~\cite{hypersim}. All three store
 depth as 16-bit millimetres and are read with each dataset's own validity mask
 and depth range; NYUv2 additionally uses the Eigen crop. The metric is the
 scale-invariant boundary \bfone{} of Depth Pro~\cite{depthpro}. We report the
-raw relative change in \bfone{} against each base model's own unsharpened
+relative change in \bfone{} against each base model's own unsharpened
 prediction. Predictions are aligned to ground truth in their own space before
 scoring --- log depth for Marigold V2, disparity for Lotus --- and the alignment
 affects every variant equally.
@@ -347,9 +352,10 @@ whose lower bound is $+10.49\%$. Pixel-wise accuracy does not regress: AbsRel
 moves from 0.03881 to 0.03860 and $\delta_1$ from 0.97969 to 0.98000. Both
 changes are small, and we claim only that accuracy is not traded for boundaries.
 
-Per-frame scoring shows the mean is not carried by a few frames: 493 of 651
-frames improve (75.7\%), with a median relative gain of $+14.13\%$ and first
-and third quartiles $+0.32\%$ and $+34.38\%$. The three frames excluded here have a baseline
+Per-frame scoring shows the mean is not carried by a few frames: 484 of 651
+frames improve (74.3\%), with a median relative gain of $+13.15\%$ and first
+and third quartiles $-0.19\%$ and $+31.57\%$; a quarter of frames are therefore
+slightly worse. The three frames excluded here have a baseline
 \bfone{} of zero at all eleven thresholds, so a relative gain is undefined for
 them; they are included in the pooled figure, where they contribute zero.
 
@@ -471,21 +477,21 @@ the released configuration's default, so its 21.3 billion parameters occupy
 roughly 10.6\,GB and the model fits a 24\,GB card; at bf16 it would not.
 
 \begin{table}[t]
-\caption{Per-frame cost and the gain it buys, all four rows from the single
-seed scoring $+12.49\%$ in Table~\ref{tab:main}, so that the grids are
-comparable with each other. The segmentation point grid is the only knob that
-matters.}
+\caption{Per-frame cost and the gain it buys. Grids 16 and 48 are means over the
+four seeds of Table~\ref{tab:main} with their standard deviation; the other two
+rows are the single seed scoring $+12.49\%$ there. The segmentation point grid is
+the only knob that matters.}
 \label{tab:cost}
 \centering
 \begin{tabular}{lrrr}
 \toprule
-Configuration & ms/frame & raw \bfone{} & ms per point \\
+Configuration & ms/frame & \bfone{} change & ms per point \\
 \midrule
 depth model only        & 495   & ---        & --- \\
 + selector, no seg.     & 525   & $+7.30\%$  & \textbf{72} \\
-+ selector, grid 16     & \textbf{1{,}059} & $\mathbf{+11.32\%}$ & \textbf{94} \\
++ selector, grid 16     & \textbf{1{,}059} & $\mathbf{+11.02 \pm 0.64\%}$ & \textbf{96} \\
 + selector, grid 32     & 1{,}996 & $+11.17\%$ & 179 \\
-+ selector, grid 48     & 3{,}128 & $+12.49\%$ & 250 \\
++ selector, grid 48     & 3{,}128 & $+11.92 \pm 0.90\%$ & 262 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -494,14 +500,17 @@ The selector costs 12.0\,ms and the repair 18.3\,ms, so what this work adds is
 30.3\,ms --- 6\% of the depth model's own 495\,ms. The segmentation dominates
 everything else, at 534\,ms to 2{,}603\,ms depending on its point grid.
 
-\textbf{A coarse grid suffices.} Grid 16 reaches 91\% of grid 48's gain for
-20\% of its cost, making the whole pipeline 3.0$\times$ faster and
-2.7$\times$ cheaper per point of \bfone{}. Precision runs the other way across
-the grids (51.6\%, 50.6\%, 50.2\% at grids 16, 32, 48), which says what the
-coarse grid is doing: it traces large objects and misses wallpaper patterns and
+\textbf{A coarse grid suffices.} Grid 16 reaches 92\% of grid 48's gain for
+20\% of the segmentation cost, making the whole pipeline 3.0$\times$ faster and
+2.7$\times$ cheaper per point of \bfone{}. The 0.90-point gap is smaller than
+the 0.90 standard deviation across seeds, so no single pair of runs could settle
+the ordering; paired by seed, however, grid 48 is ahead in all four, by
+$0.90 \pm 0.29$ points ($p = 0.009$). The difference is consistent and small. Precision runs the other way across
+the grids (51.6\%, 50.6\%, 50.2\% at grids 16, 32, 48, one seed), which says
+what the coarse grid is doing: it traces large objects and misses wallpaper patterns and
 floor seams, so the candidate set it produces is already cleaner. Grid 48 finds
-3{,}200 more contour pixels per frame than grid 16 and \bfone{} barely moves,
-so most of those are false positives. This is the same mechanism as the
+3{,}200 more contour pixels per frame than grid 16 and buys 0.90 points of
+\bfone{} with them, so most of those are false positives. This is the same mechanism as the
 ablation above --- the segmentation helps by shrinking the target set ---
 appearing along a different axis.
 
@@ -555,16 +564,19 @@ Three further remedies failed. Dropping the RGB channels made transfer worse
 rather than better. Sweeping the retention from 2\% to 20\% on ScanNet found no
 setting that reaches the no-selection result. Training on an equal mixture of 795
 NYUv2 and 795 Hypersim frames damaged the in-domain result without helping
-transfer. Data volume is not the constraint: cutting NYUv2 to 393 frames costs
-3.2 points of precision (50.2\% to 47.0\%, two seeds) and the gain falls only to
-$+9.72\%$, far short of the shortfall on either held-out dataset.
+transfer. Data volume cannot explain the transfer failure, though it is not free:
+cutting NYUv2 to 393 frames costs 3.2 points of precision (50.2\% to 47.0\%) and
+2.2 points of gain ($+11.92\%$ to $+9.72\%$), 18\% of it, measured over two
+seeds against the four of Table~\ref{tab:main}. The gap between in-domain and
+ScanNet is 9.1 points, four times larger.
 
 \textbf{Precision does not order the rows.} The NYUv2-trained selector is more
 precise on Hypersim than in its own domain (55.8\% against 50.2\%) and scores
 worst there. Precision is not comparable across datasets in any case, since the
 share of contour pixels sitting on a real step differs between them --- 6.07\% on
-NYUv2 against 22.8\% on Hypersim. What separates the rows is which dataset the
-selector was trained on, and we cannot reduce that to a quantity we measure.
+NYUv2 against 22.8\% on Hypersim. What separates the rows is whether the
+evaluation data matches the selector's training domain, and we cannot reduce
+that to a quantity we measure.
 
 We report this because it bears on a claim the prior work in this area makes.
 Post-processing that is model-agnostic is not thereby dataset-agnostic, and the
@@ -589,7 +601,8 @@ Post-hoc boundary sharpening for monocular depth fails, on a model whose
 boundaries are already reasonable, not because contours are badly localised but
 because most of them mark no depth step. Fixing the repair and learning only its
 target makes the gain attributable, costs 30\,ms per frame and 1.9M parameters,
-and transfers across depth models without retraining. It does not transfer
+and transfers across depth models without retraining; the segmentation it
+depends on costs a further 534\,ms at the coarsest grid. It does not transfer
 across datasets, and we were unable to make it do so.
 
 \begin{thebibliography}{00}
@@ -598,17 +611,17 @@ across datasets, and we were unable to make it do so.
 K.~Schindler, ``Repurposing diffusion-based image generators for monocular depth
 estimation,'' in \emph{CVPR}, 2024.
 
-\bibitem{lotus} J.~He et al., ``Lotus: Diffusion-based visual foundation model
-for high-quality dense prediction,'' arXiv:2409.18124, 2024.
+\bibitem{lotus} J.~He, H.~Li, W.~Yin et al., ``Lotus: Diffusion-based visual
+foundation model for high-quality dense prediction,'' in \emph{ICLR}, 2025.
 
 \bibitem{marigoldv2} I.~Pavlovic, T.~Wandel, A.~Obukhov, L.~Bartolomei,
 A.~Davydov, F.~Tosi, M.~Poggi, S.~S\"usstrunk, and D.~Dai, ``Marigold V2:
 Revisiting diffusion transformers for monocular depth estimation,''
 arXiv:2609.08084, 2026.
 
-\bibitem{onestep} G.~Garcia, K.~Abou~Zeid, C.~Schmidt, D.~de~Geus,
+\bibitem{onestep} G.~M.~Garcia, K.~Knaebel, C.~Schmidt, D.~de~Geus,
 A.~Hermans, and B.~Leibe, ``Fine-tuning image-conditional diffusion models is
-easier than you think,'' arXiv:2409.11355, 2024.
+easier than you think,'' in \emph{WACV}, 2025.
 
 \bibitem{depthpro} A.~Bochkovskii et al., ``Depth Pro: Sharp monocular metric
 depth in less than a second,'' in \emph{ICLR}, 2025.

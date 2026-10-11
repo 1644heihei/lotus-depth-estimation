@@ -36,6 +36,15 @@ TODO markers.
 - `figures/qualitative_a.png`, `figures/qualitative_b.png` — from
   `viz_sharpening.py`. Regenerate with:
 
-      python viz_sharpening.py --n_panels 6 --out_dir output/figures/sharpening_mv2
+      python viz_sharpening.py --dataset nyuv2 --model marigold_v2 \
+        --mask_cache_dir D:/lotus/data/oracle_cache/sam_auto48_sel_raw \
+        --max_abs_rel 0.030294 --n_panels 6 \
+        --out_dir output/figures/sharpening_mv2
+
+  The earlier command omitted --model, so the prediction was aligned in disparity
+  space against a log-depth model and every per-frame number in the caption was
+  wrong; --mask_cache_dir must be passed explicitly because the registry would
+  otherwise replace it with the SAM candidates and the figure would show no
+  selection. --max_abs_rel is the split's median AbsRel.
 
 - The pipeline figure is TikZ inside `main.tex`; it needs no external file.

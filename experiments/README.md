@@ -26,6 +26,8 @@ So they live here now, unedited, including the ones whose results were negative.
 | `label_t_sweep.sh` | the label threshold at 15, 20 and 25%, scored on test | §5 |
 | `label_t_on_val.sh` | the same four thresholds, scored on a validation split | §5 |
 | `hs10k_in_domain.sh` | the Hypersim-trained selector in its own domain | §5 |
+| `rev2_followup.sh` | random controls at the selector's budget, grid 16 on four seeds | §6 |
+| `rnd_lotus.sh` | the same random masks scored on Lotus | §6 |
 
 ## Paths
 

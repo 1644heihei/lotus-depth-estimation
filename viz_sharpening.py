@@ -63,9 +63,13 @@ def parse_args():
     p.add_argument("--rgb_dir", type=str, default=f"{NYU}/test")
     p.add_argument("--pred_cache_dir", type=str, default="D:/lotus/data/marigold_v2_pred")
     p.add_argument("--processing_res", type=int, default=640)
-    p.add_argument("--mask_cache_dir", type=str,
-                   default="D:/lotus/data/oracle_cache/sam_auto48_sel_raw",
-                   help="The contours to sharpen at - normally the selector's output.")
+    p.add_argument("--mask_cache_dir", type=str, required=True,
+                   help="The contours to sharpen at - normally the selector's "
+                        "output, e.g. D:/lotus/data/oracle_cache/sam_auto48_sel_raw. "
+                        "Required, not defaulted: every other script means the "
+                        "dataset's SAM contours by this flag, so the registry "
+                        "fills that in when it is left at a default and the figure "
+                        "silently becomes one of no selection.")
     p.add_argument("--sam_cache_dir", type=str, default="D:/lotus/data/oracle_cache/sam_auto48",
                    help="Every SAM contour, drawn as the candidates the selector chose from.")
     p.add_argument("--out_dir", type=str, default="output/figures/sharpening")
@@ -79,7 +83,8 @@ def parse_args():
     p.add_argument("--max_abs_rel", type=float, default=0.06,
                    help="Only draw frames the depth model already handles this well, so "
                         "the figure shows sharpening a good prediction rather than "
-                        "rescuing a broken one. 0.06 is the split's median.")
+                        "rescuing a broken one. 0.06 keeps the most accurate third of "
+                        "the split; its median AbsRel is higher than that.")
     p.add_argument("--cmap", type=str, default="magma")
     p.add_argument("--dpi", type=int, default=200)
     add_align_space_arg(p)
@@ -168,7 +173,9 @@ def draw_panel(path, rgb, base, sharp, gt, valid, kept, cand, box, title, cmap, 
         a.set_xticks([]); a.set_yticks([])
     ax[1, 0].set_ylabel("zoom", fontsize=11)
     ax[2, 0].set_ylabel("edges (zoom)", fontsize=11)
-    fig.text(0.5, 0.055, "edges: green = agrees with GT,  red = invented,  grey = missed",
+    fig.text(0.5, 0.055,
+             "edges: green = in GT and prediction,  red = prediction only,  "
+             "grey = GT only",
              ha="center", fontsize=9, color="#444444")
     fig.suptitle(title, fontsize=11)
     fig.tight_layout(rect=(0, 0.07, 1, 0.96))
