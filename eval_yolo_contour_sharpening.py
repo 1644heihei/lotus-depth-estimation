@@ -56,7 +56,7 @@ from utils.align_space import add_align_space_arg, get_aligner
 from utils.soft_edge_error import SEE_PATCH_SIZES, soft_edge_errors
 from utils.dataset_paths import resolve
 from utils.eval_frames import (add_dataset_args, depth_scale, list_frames,
-                               valid_mask)
+                               scene_of, valid_mask)
 
 VARIANTS = ["baseline", "yolo", "yolo_ctrl", "yolo_selected", "perfect"]
 
@@ -105,6 +105,12 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--max_images", type=int, default=0)
     p.add_argument(
+        "--scenes_file", type=str, default=None,
+        help="Score only frames whose scene is listed here, one scene per line. "
+             "Selecting a hyperparameter on the split it is later reported on is "
+             "not a selection; this scores the scenes train_contour_selector.py "
+             "held out of training instead.")
+    p.add_argument(
         "--allow_missing_pred", action="store_true",
         help="Skip frames whose prediction is not cached instead of failing. Off by "
              "default: a partial cache scores a subset of the split without saying so, "
@@ -138,6 +144,12 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     pairs = list_frames(args)
+    if args.scenes_file:
+        want = {ln.strip() for ln in Path(args.scenes_file).read_text(
+            encoding='utf-8').splitlines() if ln.strip()}
+        pairs = [q for q in pairs if scene_of(args.dataset, q[0]) in want]
+        assert pairs, f'no frame matches the {len(want)} scenes in {args.scenes_file}'
+        print(f'scene filter: {len(pairs)} frames from {len(want)} scenes')
     if args.max_images:
         pairs = pairs[: args.max_images]
 

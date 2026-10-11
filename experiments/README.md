@@ -23,6 +23,9 @@ So they live here now, unedited, including the ones whose results were negative.
 | `hs_sweep.sh` | Hypersim retention 2–40%, both directions | §4.12 |
 | `nyu393.sh` | NYUv2 cut to ScanNet's frame count | §4.12 |
 | `see_full.sh` | Soft Edge Error on both depth models | — |
+| `label_t_sweep.sh` | the label threshold at 15, 20 and 25%, scored on test | §5 |
+| `label_t_on_val.sh` | the same four thresholds, scored on a validation split | §5 |
+| `hs10k_in_domain.sh` | the Hypersim-trained selector in its own domain | §5 |
 
 ## Paths
 
