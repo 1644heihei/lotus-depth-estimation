@@ -419,8 +419,9 @@ alternatives, each on the base model's own predictions.
 
 \begin{table}[t]
 \caption{Training-free controls, measured separately on each base model.
-Raw \bfone{} change. The relocated row is the mean of three independent
-relocations; the two random rows are single draws.}
+\bfone{} change. The relocated row is the mean of three independent
+relocations; the two random rows are means of three draws, each spending the
+selector's own per-frame budget.}
 \label{tab:controls}
 \centering
 \begin{tabular}{lrr}
@@ -429,8 +430,8 @@ Selection & Marigold V2 & Lotus \\
 \midrule
 none (all contours)            & $-1.90\%$  & $+10.31\%$ \\
 relocated (same sparsity)      & $-0.50\%$  & $-0.57\%$  \\
-random pixels (4.1\% kept)     & $-20.35\%$ & $-19.70\%$ \\
-random blocks (4.1\% kept)     & $-1.48\%$  & $-0.67\%$  \\
+random pixels                  & $-24.96 \pm 0.53\%$ & $-22.11 \pm 1.17\%$ \\
+random blocks                  & $-1.04 \pm 0.15\%$  & $-0.03 \pm 0.36\%$ \\
 best hand-crafted threshold    & $+1.25\%$  & $+10.46\%$ \\
 \midrule
 \textbf{trained selector}      & $\mathbf{+11.92\%}$ & $\mathbf{+27.83\%}$ \\
@@ -449,12 +450,13 @@ have, which makes the comparison conservative; a control chosen by a proxy
 metric would have been too weak, and a weak control only flatters the method it
 is compared against.
 
-The two random rows keep 4.1\% of the contour where the selector keeps 6.0\%,
-so they are not budget-matched to it. Fewer pixels means less smooth surface
-discarded, which works in the controls' favour, and each is one draw rather than
-an average. Random-pixel selection scores almost identically on both models
-($-20.35\%$ and $-19.70\%$), as it should: that control measures a property of
-the repair operation, not of the depth model.
+Both random rows spend exactly the budget the selector spends, taken from its
+output frame by frame. Random-pixel selection is close on the two models
+($-24.96\%$ and $-22.11\%$), which is what a control that measures the repair
+operation rather than the depth model should do. Random blocks, which keeps the
+contour contiguous, costs almost nothing on either and nothing at all on Lotus:
+scattering the selection is most of what makes the pixel control so destructive,
+and choosing badly on its own is nearly free.
 
 \subsection{How much the segmentation contributes}
 
