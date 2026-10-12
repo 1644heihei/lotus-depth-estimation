@@ -19,6 +19,9 @@ from pathlib import Path
 
 import pypandoc
 
+from docx_layout import (reference_docx, span_figures, span_title,
+                         wide_figure_indices)
+
 HERE = Path(__file__).resolve().parent
 
 
@@ -47,25 +50,55 @@ def author_of(src: str) -> str:
     return ", ".join(ln for ln in lines if ln)
 
 
+def number_citations(src: str) -> str:
+    """Replace \\cite{key,...} with the [n] numbers thebibliography would have given.
+
+    Numbering follows \\bibitem order, which is what IEEEtran prints, so the Word copy
+    and the PDF cite the same numbers. An unknown key is left visible as [?key] rather
+    than dropped, because a silently missing citation is what this is fixing.
+    """
+    order = {m.group(1): i + 1 for i, m
+             in enumerate(re.finditer(r"\\bibitem\{([^}]+)\}", src))}
+
+    def one(m: re.Match) -> str:
+        keys = [k.strip() for k in m.group(1).split(",")]
+        return ", ".join(f"[{order[k]}]" if k in order else f"[?{k}]" for k in keys)
+
+    return re.sub(r"\\cite\{([^}]+)\}", one, src)
+
+
 def convert(tex: Path, out: Path) -> None:
     src = tex.read_text(encoding="utf-8")
     title, author = title_of(src), author_of(src)
 
     # pandoc expands \newcommand itself, so \bfone needs no help; substituting it here
     # would rewrite the definition line as well and the file would stop parsing.
-    body = src
+    # \cite is a different matter: with a hand-written thebibliography and no .bib there
+    # is nothing for pandoc to resolve against, and it drops the citation silently -
+    # "Boundary-specific metrics do ." Numbering them here keeps the references readable.
+    body = number_citations(src)
 
     tmp = out.with_suffix(".pandoc.tex")
     tmp.write_text(body, encoding="utf-8")
+    ref = reference_docx(pypandoc.get_pandoc_path(),
+                         out.with_name("_reference_two_column.docx"))
     try:
         pypandoc.convert_file(
             str(tmp), "docx", outputfile=str(out),
             extra_args=[f"--resource-path={HERE}", "--standalone",
+                        f"--reference-doc={ref}",
                         "--metadata", f"title={title}",
                         "--metadata", f"author={author}"])
     finally:
         tmp.unlink(missing_ok=True)
-    print(f"{out.name}: {out.stat().st_size // 1024} KB   title={title[:48]!r}")
+        ref.unlink(missing_ok=True)
+
+    # The break goes on the last paragraph above the abstract, which is the author line.
+    spanned = span_title(out)
+    wide = span_figures(out, wide_figure_indices(src))
+    print(f"{out.name}: {out.stat().st_size // 1024} KB   two columns, "
+          f"title spanning: {'yes' if spanned else 'NO - abstract not found'}, "
+          f"full-width figures: {wide}   title={title[:40]!r}")
 
 
 def main() -> int:
