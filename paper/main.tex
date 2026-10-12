@@ -182,20 +182,27 @@ selector, and Sec.~\ref{sec:why} is the measurement that says why it is needed.
 \subsection{The repair operation}
 \label{sec:repair}
 
-We call the operation \emph{barrier sharpening}: it treats each selected
-contour as a barrier across which depth may not be interpolated. Let $z$ be a
-predicted depth map and $C$ a set of contour pixels. The operation discards a
-band of $\pm 2$\,px around $C$; labels the connected components of the valid
-region with that band removed, so the two sides of a contour become different
-components; floods those labels inward one pixel at a time until the band is
-filled, so the two sides meet inside the band rather than one leaking across;
-and refills each discarded pixel with the mean of its \emph{own} component's
-depth within a radius of 3\,px. The band is discarded because a diffusion model
+We call the operation \emph{barrier sharpening}: it treats each selected contour
+as a barrier across which depth may not be interpolated. Let $z$ be a predicted
+depth map, $V$ its valid pixels and $C \subseteq V$ a set of contour pixels. The
+operation discards the band
+\begin{equation}
+B = \{\, p \in V \mid \mathrm{dist}(p, C) \le r_b \,\}, \qquad r_b = 2,
+\end{equation}
+labels the connected components of $V \setminus B$, so that the two sides of a
+contour receive different labels, and floods those labels inward one pixel at a
+time until $B$ is covered, giving every $p \in B$ a label $\ell(p)$. Each
+discarded pixel is then refilled from its own side only,
+\begin{equation}
+\hat z(p) = \frac{1}{|N(p)|} \sum_{q \in N(p)} z(q),
+\end{equation}
+where $N(p) = \{\, q \notin B \mid \|q - p\| \le r_f,\ \ell(q) = \ell(p) \,\}$
+and $r_f = 3$. Pixels outside $B$ are unchanged. The band is discarded because a diffusion model
 interpolates across the boundary; refilling from one side only removes that
 mixing. The component labels come from the contours themselves, not from the
 segmentation masks. The operation has two settings and learns nothing. The
-refill radius must exceed the band, or there is nothing to refill from and the
-operation is a silent no-op.
+we require $r_f > r_b$, or $N(p)$ is empty and the
+operation leaves the map unchanged.
 
 The separation of the two sides holds only where a contour closes or reaches the
 image border. Where it ends inside the image the valid region stays connected
@@ -279,9 +286,14 @@ repair spends would drift from frame to frame. The budget is 6\% because that is
 the positive rate on the training frames, where 6.066\% of contour pixels lie
 within 1\,px of a true step.
 
-\textbf{Loss and training.} Binary cross-entropy masked to contour pixels; the
-89\% of the valid image that carries no contour is not a question the selector
-is asked. A contour pixel is positive if it lies within 1\,px of a depth
+\textbf{Loss and training.} The selector emits a logit $s_p$ at every pixel and is
+trained with binary cross-entropy masked to the contour,
+\begin{equation}
+\mathcal{L} = -\frac{1}{|C|} \sum_{p \in C}
+\big[\, y_p \log \sigma(s_p) + (1 - y_p) \log (1 - \sigma(s_p)) \,\big],
+\end{equation}
+so the 89\% of the valid image that carries no contour is not a question the
+selector is asked. A contour pixel is positive if it lies within 1\,px of a depth
 discontinuity in ground truth, where a discontinuity is a depth ratio above
 10\%. We chose that threshold on a validation split rather than on the test
 set: scoring \bfone{} on the 141 frames of the 40 scenes held out of the 795
@@ -314,6 +326,17 @@ relative change in \bfone{} against each base model's own unsharpened
 prediction. Predictions are aligned to ground truth in their own space before
 scoring (log depth for Marigold V2, disparity for Lotus) and the alignment
 affects every variant equally.
+
+\textbf{Implementation.} The selector is trained with AdamW at a learning rate of
+$3 \times 10^{-4}$, weight decay $10^{-4}$ and a cosine schedule, for 30 epochs at
+batch size 4. Frames are used at their native $480 \times 640$ with no resizing and
+no augmentation: the band and the refill radius are defined in pixels, so rescaling
+would change what $r_b = 2$ means. Contours come from Segment Anything
+\cite{sam} with the ViT-H checkpoint in automatic mode, a $32 \times 32$ prompt
+grid and its default quality filter; ``grid 16'' and ``grid 48'' in
+Sec.~\ref{sec:cost} vary that grid. A frame's contour set is the union of the
+one-pixel boundaries of the returned masks, not the union of the masks, which
+would fill the frame. Timings are on one RTX 4090.
 
 \subsection{Main result}
 
@@ -511,19 +534,14 @@ appearing along a different axis.
 \section{Limitations}
 \label{sec:limitations}
 
-\textbf{Two public benchmarks, because a boundary metric needs dense ground
-truth.} The base models are evaluated on five benchmarks: NYUv2, KITTI
-\cite{kitti}, ScanNet, ETH3D \cite{eth3d} and DIODE \cite{diode}. \bfone{} compares NEIGHBOURING pixels' depth ratio, so
-it needs ground truth dense enough for both to exist, and on three of the five
-it is not. KITTI's LiDAR leaves 13.2\% of adjacent pairs with both pixels valid;
-ETH3D, which projects a laser point cloud onto 24-megapixel DSLR frames, leaves
-4.1\%. DIODE is dense (99.7\% indoors), but its standard evaluation protocol
-masks out pixels whose depth gradient exceeds a threshold, because its laser
-ground truth is unreliable at edges, and that filter removes 99.4\% of the
-depth discontinuities indoors and 100\% outdoors, which is precisely what this
-method operates on. Of the five, \bfone{} is well defined on NYUv2 and ScanNet,
-and we evaluate on both. We also evaluate on Hypersim, which is not one of the
-five but is Marigold V2's own training domain, as a third transfer test.
+\textbf{Two of the five standard benchmarks.} \bfone{} compares neighbouring
+pixels, so it needs ground truth dense enough for both to be valid, and three of
+the five benchmarks these models are evaluated on do not provide it: KITTI
+\cite{kitti} leaves 13.2\% of adjacent pairs valid and ETH3D \cite{eth3d} 4.1\%,
+while DIODE \cite{diode} is dense but its evaluation protocol masks the depth
+gradients this method operates on, removing 99.4\% of indoor discontinuities. We
+therefore evaluate on NYUv2 and ScanNet, and additionally on Hypersim as a third
+transfer set.
 
 \textbf{The selector transfers across depth models but not across datasets.}
 Table~\ref{tab:generalisation} applies the NYUv2-trained selector to ScanNet and
@@ -553,23 +571,18 @@ $-2.23\%$ on NYUv2 and $+0.39\%$ on ScanNet. Hypersim is not saturated either (s
 its domain as it does in NYUv2's, and stops working only when the domain changes
 between training and use.
 
-Three further remedies failed. Dropping the RGB channels made transfer worse
-rather than better. Sweeping the retention from 2\% to 20\% on ScanNet found no
-setting that reaches the no-selection result. Training on an equal mixture of 795
-NYUv2 and 795 Hypersim frames damaged the in-domain result without helping
-transfer. Data volume cannot explain the transfer failure, though it is not without effect:
-cutting NYUv2 to 393 frames costs 3.2 points of precision (50.2\% to 47.0\%) and
-2.2 points of gain ($+11.92\%$ to $+9.72\%$), 18\% of it, measured over two
-seeds against the four of Table~\ref{tab:main}. The gap between in-domain and
-ScanNet is 9.1 points, four times larger.
+Three further remedies failed: dropping the RGB channels, sweeping the retention
+from 2\% to 20\% on ScanNet, and training on an equal mixture of 795 NYUv2 and
+795 Hypersim frames. Data volume does not account for the gap either. Cutting
+NYUv2 to 393 frames costs 2.2 points of gain ($+11.92\%$ to $+9.72\%$, two
+seeds), against the 9.1 points that separate in-domain from ScanNet.
 
 \textbf{Precision does not order the rows.} The NYUv2-trained selector is more
-precise on Hypersim than in its own domain (55.8\% against 50.2\%) and scores
-worst there. Precision is not comparable across datasets in any case, since the
-share of contour pixels sitting on a real step differs between them, 6.07\% on
-NYUv2 against 22.8\% on Hypersim. What separates the rows is whether the
-evaluation data matches the selector's training domain, and we cannot reduce
-that to a quantity we measure.
+precise on Hypersim than in its own domain (55.8\% against 50.2\%) yet scores
+worst there, and precision is not comparable across datasets in any case: the
+share of contour pixels on a real step is 6.07\% on NYUv2 and 22.8\% on
+Hypersim. What separates the rows appears to be whether the evaluation data
+matches the training domain, which we cannot reduce to a measured quantity.
 
 We report this because it bears on a claim the prior work in this area makes.
 Post-processing that is model-agnostic is not thereby dataset-agnostic, and the
@@ -579,9 +592,8 @@ two kinds of generalisation can come apart.
 $+43.39\%$ against our $+11.92\%$, so 72.5\% of what selection could deliver is
 unrecovered. The gap is precision: 50.2\% against the oracle's 100\%.
 
-\textbf{Metric scope.} The improvement is in boundary metrics. AbsRel and
-$\delta_1$ move by amounts too small to claim as improvements, and we claim
-only that they do not regress.
+\textbf{Metric scope.} The improvement is in boundary metrics; AbsRel and
+$\delta_1$ move too little to claim, and we claim only that they do not regress.
 
 \textbf{Label and metric share a definition.} Supervision is ``within 1\,px of a
 ground-truth depth step'' and \bfone{} scores agreement with ground-truth depth
