@@ -141,6 +141,31 @@ def edge_overlay(depth, gt, valid, t):
     return img
 
 
+def _profile(axis, base, sharp, gt, valid, sl):
+    """Draw depth along one row of the crop for the three maps.
+
+    The row is chosen where ground truth has its largest horizontal jump inside the
+    crop, since that is the boundary the figure is about; rows with no step would plot
+    three flat lines on top of each other.
+    """
+    b, s_, g, v = base[sl], sharp[sl], gt[sl], valid[sl]
+    step = np.where(v[:, :-1] & v[:, 1:], np.abs(np.diff(g, axis=1)), 0.0)
+    r = int(np.argmax(step.max(axis=1))) if step.size else g.shape[0] // 2
+    x = np.arange(g.shape[1])
+    m = v[r]
+    for y, style, colour, label in ((g[r], "-", "#999999", "GT"),
+                                    (b[r], "--", "#d06060", "baseline"),
+                                    (s_[r], "-", "#2a6ebb", "sharpened")):
+        yy = np.where(m, y, np.nan)
+        axis.plot(x, yy, style, color=colour, linewidth=1.6, label=label)
+    axis.legend(fontsize=7, loc="best", frameon=False)
+    axis.set_title(f"depth across row {r} of the crop", fontsize=9)
+    axis.set_axis_on()
+    axis.tick_params(labelsize=7)
+    for side in ("top", "right"):
+        axis.spines[side].set_visible(False)
+
+
 def draw_panel(path, rgb, base, sharp, gt, valid, kept, cand, box, title, cmap, dpi, t):
     y0, x0, s = box
     lo, hi = np.percentile(gt[valid], [2, 98])
@@ -157,11 +182,30 @@ def draw_panel(path, rgb, base, sharp, gt, valid, kept, cand, box, title, cmap, 
     fig, ax = plt.subplots(3, 4, figsize=(13.2, 9.6))
     row0 = [("RGB", rgb), ("Baseline", dep["Baseline"]),
             ("Sharpened", dep["Sharpened"]), ("Ground truth", dep["Ground truth"])]
+    # The zoom gets its own colour scale, taken from the ground truth inside the crop
+    # and shared by all three maps there. On the whole-frame scale a boundary spans a
+    # few percent of the range and the band this operation rewrites is two pixels wide,
+    # so the repair is invisible by eye - which is the only thing the zoom exists to
+    # show. Scaling to the crop makes the step occupy the colour map.
+    cg = gt[sl][valid[sl]]
+    lo2, hi2 = np.percentile(cg, [2, 98]) if cg.size else (lo, hi)
+    zoom = {"RGB": rgb[sl],
+            "Baseline": colorise(base, valid, lo2, hi2, cmap)[sl],
+            "Sharpened": colorise(sharp, valid, lo2, hi2, cmap)[sl],
+            "Ground truth": colorise(gt, valid, lo2, hi2, cmap)[sl]}
     for j, (name, im) in enumerate(row0):
         ax[0, j].imshow(im)
         ax[0, j].set_title(name, fontsize=11)
         ax[0, j].add_patch(plt.Rectangle((x0, y0), s, s, fill=False, color="#00d0ff", lw=1.6))
-        ax[1, j].imshow(im[sl])
+        if j:                      # column 0 of the zoom row carries the profile
+            ax[1, j].imshow(zoom[name])
+
+    # A depth profile across the boundary, in place of the RGB crop, which the contour
+    # overlay below already shows. The operation rewrites a band two pixels wide; at
+    # this scale that is a few pixels of colour and the eye does not catch it, while on
+    # a profile the baseline's ramp and the step that replaces it are unmistakable. The
+    # row drawn is the one where ground truth steps hardest inside the crop.
+    _profile(ax[1, 0], base, sharp, gt, valid, sl)
     row2 = [("SAM contours (blue) / kept (red)", overlay[sl]),
             ("Baseline edges", edge_overlay(base, gt, valid, t)[sl]),
             ("Sharpened edges", edge_overlay(sharp, gt, valid, t)[sl]),
@@ -170,8 +214,9 @@ def draw_panel(path, rgb, base, sharp, gt, valid, kept, cand, box, title, cmap, 
         ax[2, j].imshow(im)
         ax[2, j].set_title(name, fontsize=9)
     for a in ax.ravel():
-        a.set_xticks([]); a.set_yticks([])
-    ax[1, 0].set_ylabel("zoom", fontsize=11)
+        if a is not ax[1, 0]:
+            a.set_xticks([]); a.set_yticks([])
+    ax[1, 0].set_ylabel("depth", fontsize=9)
     ax[2, 0].set_ylabel("edges (zoom)", fontsize=11)
     fig.text(0.5, 0.055,
              "edges: green = in GT and prediction,  red = prediction only,  "
