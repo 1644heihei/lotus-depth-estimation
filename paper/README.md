@@ -64,3 +64,17 @@ Two things happen to the LaTeX before pandoc sees it. `\cite` is expanded to the
 numbers `thebibliography` would print, because with no .bib to resolve against
 pandoc drops citations silently. Columns are then injected as Word sections,
 which is the only place Word keeps them; `docx_layout.py` has that part.
+
+To build against the venue's own Word template instead:
+
+      python build_docx.py --only ja --suffix _template \
+        --template <conference-template-a4.docx>
+
+`docx_template.py` does that part. The template cannot be used as supplied: its
+lengths are written in points where OOXML wants integer twips, and its last
+section references a footer pandoc does not carry over, so the output is a file
+Word refuses to open - a two-line document is enough to reproduce it. Both are
+repaired in a copy first. The styles are then pointed at the template's own names,
+the references get a heading LaTeX prints and pandoc does not, and the caption
+numbering is rewritten from "Fig."/"TABLE" to 図/表 so it agrees with the
+Japanese body.

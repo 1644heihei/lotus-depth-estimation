@@ -136,9 +136,13 @@ def span_figures(docx: Path, which: list[int]) -> int:
     return len(edits) // 2
 
 
-def _with_section(para: str, cols: str) -> str:
-    """Attach a section break to a paragraph, respecting CT_PPr's element order."""
-    sect = f"<w:sectPr>{CONTINUOUS}{PAGE}{cols}</w:sectPr>"
+def _with_section(para: str, cols: str, page: str = PAGE) -> str:
+    """Attach a section break to a paragraph, respecting CT_PPr's element order.
+
+    `page` is the geometry the new section carries; it has to be repeated on every
+    section rather than inherited, because a section's page setup is its own.
+    """
+    sect = f"<w:sectPr>{CONTINUOUS}{page}{cols}</w:sectPr>"
     if "</w:pPr>" in para:
         return para.replace("</w:pPr>", sect + "</w:pPr>", 1)
     return re.sub(r"(<w:p\b[^>]*>)", r"\1" + f"<w:pPr>{sect}</w:pPr>", para, count=1)
