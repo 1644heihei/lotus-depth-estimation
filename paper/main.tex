@@ -16,6 +16,7 @@
 \usepackage{graphicx}
 \usepackage{textcomp}
 \usepackage{booktabs}
+\usepackage[T1]{fontenc}
 
 \newcommand{\bfone}{BF\textsubscript{1}}
 
@@ -44,7 +45,7 @@ learn only which contours to apply it to. On NYUv2 the selector improves
 boundary F1 by 11.9 percent over four seeds, and the same selectors, applied
 without retraining to a depth model of a different architecture and output
 representation, improve it by 27.8 percent. Training-free controls place the
-contribution of the learning at 10.7 and 17.4 points. We also report that the
+contribution of the learning at 10.7 and 17.4 percentage points. We also report that the
 selector does not transfer across datasets, and that the remedies we tried did
 not resolve it.
 \end{abstract}
@@ -91,19 +92,16 @@ Our contributions:
       (Sec.~\ref{sec:experiments}, Sec.~\ref{sec:limitations}).
 \end{enumerate}
 
-We also report, in Sec.~\ref{sec:limitations}, that the selector does not
-transfer across datasets, and that our attempts to fix that failed.
-
 \begin{figure*}[t]
 \centerline{\includegraphics[width=\textwidth]{figures/qualitative_a.png}}
 \caption{What the method does, on a dining-room frame. Top: the whole frame;
-nothing outside the selected contours moves. Middle: a 48\,px crop at the
+nothing outside the bands around the selected contours changes. Middle: a 48\,px crop at the
 chair-back boundary, with a depth profile across it. The baseline misses both
 steps ground truth has; the sharpened map reproduces them. The three maps in the crop share a colour scale taken from it. Bottom: the depth discontinuities each map contains,
 which is what \bfone{} compares; green is in both, red is in the prediction
 only, grey is in ground truth only. The frame is ranked 140th of the 326 whose
 AbsRel is at or below the split median of 0.0303, by absolute \bfone{} gain;
-its relative gain of $+9.01\%$ is close to the split median of $+13.15\%$.
+its relative gain of $+9.01\%$ is below the split median of $+13.15\%$.
 The restriction keeps the example one of sharpening a good prediction.}
 \label{fig:qualitative}
 \end{figure*}
@@ -121,7 +119,7 @@ the diffusion schedule, predicting in a single step with the timestep pinned.
 Subsequent work showed that one-step fine-tuning both simplifies and
 accelerates these models by orders of magnitude~\cite{onestep}. We evaluate on
 two of them that are as far apart as the family allows: Marigold
-V2~\cite{marigoldv2}, a diffusion transformer of 21{,}282{,}180{,}672
+V2~\cite{marigoldv2}, a diffusion transformer of 21.3B
 parameters emitting affine-invariant log depth, and Lotus~\cite{lotus}, an
 868M-parameter UNet emitting disparity.
 
@@ -169,7 +167,7 @@ the gain is attributable to the selection alone.}
 Fig.~\ref{fig:pipeline} shows the pipeline. The depth model and the
 segmentation model are frozen. The repair is the fixed operation of
 Sec.~\ref{sec:repair}, which learns nothing. The only trained component is the
-selector, and Sec.~\ref{sec:why} is the measurement that says why it is needed.
+selector; Sec.~\ref{sec:why} motivates this design.
 
 \subsection{The repair operation}
 \label{sec:repair}
@@ -192,14 +190,14 @@ where $N(p) = \{\, q \notin B \mid \|q - p\| \le r_f,\ \ell(q) = \ell(p) \,\}$
 and $r_f = 3$. Pixels outside $B$ are unchanged. The band is discarded because a diffusion model
 interpolates across the boundary; refilling from one side only removes that
 mixing. The component labels come from the contours themselves, not from the
-segmentation masks. The operation has two settings and learns nothing. The
-we require $r_f > r_b$, or $N(p)$ is empty and the
+segmentation masks. The operation has two settings and learns nothing.
+We require $r_f > r_b$, or $N(p)$ is empty and the
 operation leaves the map unchanged.
 
 The separation of the two sides holds only where a contour closes or reaches the
 image border. Where it ends inside the image the valid region stays connected
-around that end, so both sides of the band belong to one component there and the
-one-sided interpolation does not hold there. Selection makes this more common:
+around that end, so both sides of the band belong to one component there and
+one-sided interpolation does not hold. Selection makes this more common:
 keeping 6\% of the contour pixels leaves fragments rather than whole outlines.
 Both effects weaken the repair, and both are present in every number we report.
 
@@ -216,7 +214,7 @@ cost of degradation smaller. Selection is what makes the operation safe on the f
 model, and it adds substantially on both.
 
 \begin{table}[t]
-\caption{Why post-hoc sharpening fails on Marigold V2, and what fixes it. NYUv2,
+\caption{Why post-hoc sharpening fails on Marigold V2, and what fixes it. \textnormal{NYUv2},
 654 frames. Oracle selection uses ground truth to choose a subset of the
 segmentation contours and moves none of them.}
 \label{tab:diagnosis}
@@ -237,7 +235,7 @@ Measuring from each true depth discontinuity to the nearest contour gives a
 median of 1.00\,px, with 66.9\% within 1\,px and 76.9\% within 2\,px. The
 contours are where the boundaries are. The failure is in the other direction:
 79.8\% of the contour pixels have no depth step anywhere within an eight-pixel
-window, wallpaper patterns, floor seams, poster edges. Sharpening there
+window; these are wallpaper patterns, floor seams and poster edges. Sharpening there
 introduces a discontinuity into a region that has none.
 
 \subsection{Selecting with ground truth reverses the sign}
@@ -257,7 +255,7 @@ than to where they lie, and Sec.~\ref{sec:selector} learns that selection.
 \subsection{The selector}
 \label{sec:selector}
 
-\textbf{Inputs and output.} The selector is a four-level U-Net with 1{,}928{,}993
+\textbf{Inputs and output.} The selector is a four-level U-Net with 1.9M
 parameters. It takes the RGB image (3 channels), the predicted depth (1), and
 the contour mask (1), and emits one logit per pixel. The prediction is
 standardised per image. Without that step no error is raised when the level and
@@ -324,8 +322,8 @@ $3 \times 10^{-4}$, weight decay $10^{-4}$ and a cosine schedule, for 30 epochs 
 batch size 4. Frames are used at their native $480 \times 640$ with no resizing and
 no augmentation: the band and the refill radius are defined in pixels, so rescaling
 would change what $r_b = 2$ means. Contours come from Segment Anything
-\cite{sam} with the ViT-H checkpoint in automatic mode, a $32 \times 32$ prompt
-grid and its default quality filter; ``grid 16'' and ``grid 48'' in
+\cite{sam} with the ViT-H checkpoint in automatic mode, a $48 \times 48$ prompt
+grid and its default quality filter; ``grid 16'' and ``grid 32'' in
 Sec.~\ref{sec:cost} vary that grid. A frame's contour set is the union of the
 one-pixel boundaries of the returned masks, not the union of the masks, which
 would fill the frame. Timings are on one RTX 4090.
@@ -423,7 +421,7 @@ metric that forgives more displacement at larger $k$ should do.
 \label{sec:controls}
 
 The gain could come from the sharpening rather than from the learning, or from
-simply being sparse. Table~\ref{tab:controls} measures five training-free
+simply being sparse. Table~\ref{tab:controls} measures six training-free
 alternatives, each on the base model's own predictions.
 
 \begin{table}[t]
@@ -472,7 +470,7 @@ output frame by frame. Random-pixel selection is close on the two models
 operation rather than the depth model should do. Random blocks, which keeps the
 contour contiguous, costs almost nothing on either and nothing at all on Lotus:
 scattering the selection is most of what makes the pixel control so destructive,
-and choosing badly on its own is nearly free.
+and choosing badly on its own incurs almost no cost.
 
 \subsection{How much the segmentation contributes}
 
@@ -498,12 +496,12 @@ roughly 10.6\,GB and the model fits a 24\,GB card; at bf16 it would not.
 \caption{Per-frame running time and the improvement obtained. Grids 16 and 48 are means over the
 four seeds of Table~\ref{tab:main} with their standard deviation; the other two
 rows are the single seed scoring $+12.49\%$ there. The segmentation point grid is
-the only knob that matters.}
+the only setting with a substantial effect.}
 \label{tab:cost}
 \centering
 \begin{tabular}{lrrr}
 \toprule
-Configuration & ms/frame & \bfone{} change & ms per point \\
+Configuration & ms/frame & \bfone{} change & ms/\bfone{} pt \\
 \midrule
 depth model only        & 495   & ---        & --- \\
 + selector, no seg.     & 525   & $+7.30\%$  & \textbf{72} \\
@@ -520,14 +518,14 @@ everything else, at 534\,ms to 2{,}603\,ms depending on its point grid.
 
 \textbf{A coarse grid gives a comparable gain.} Grid 16 reaches 92\% of grid 48's gain for
 20\% of the segmentation cost, making the whole pipeline 3.0$\times$ faster and
-cuts the time per point of \bfone{} improvement to about one in 2.7. The 0.90-point gap is smaller than
-the 0.90 standard deviation across seeds, so no single pair of runs could settle
-the ordering; paired by seed, however, grid 48 is ahead in all four, by
-$0.90 \pm 0.29$ points ($p = 0.009$). The difference is consistent and small. Precision runs the other way across
+cutting the time per point of \bfone{} improvement to about one in 2.7. The 0.90-point gap equals
+the standard deviation across seeds, so a single pair of runs cannot settle the
+ordering; paired by seed, however, grid 48 is ahead in all four, by
+$0.90 \pm 0.29$ points (paired $t$-test, $p = 0.009$). The difference is consistent and small. Precision runs the other way across
 the grids (51.6\%, 50.6\%, 50.2\% at grids 16, 32, 48, one seed), which says
 what the coarse grid is doing: it traces large objects and misses wallpaper patterns and
 floor seams, so a larger share of the candidates it produces are true boundaries. Grid 48 finds
-3{,}200 more contour pixels per frame than grid 16 and buys 0.90 points of
+3{,}200 more contour pixels per frame than grid 16 and yields 0.90 points of
 \bfone{} with them, so most of those are false positives. This is the same mechanism as the
 ablation above (the segmentation helps by shrinking the target set)
 appearing along a different axis.
@@ -549,7 +547,7 @@ Table~\ref{tab:generalisation} applies the NYUv2-trained selector to ScanNet and
 Hypersim, using Marigold V2 throughout.
 
 \begin{table}[t]
-\caption{Generalisation. The selector was trained on NYUv2; the depth model is
+\caption{Generalisation. The selector was trained on \textnormal{NYUv2}; the depth model is
 Marigold V2 in every row. Precision is measured at the same 6\% retention.}
 \label{tab:generalisation}
 \centering
@@ -603,13 +601,11 @@ from training, but the correspondence may bear on how the result is interpreted.
 
 \section{Conclusion}
 
-Post-hoc boundary sharpening for monocular depth fails, on a model whose
-boundaries are already reasonable, not because contours are badly localised but
-because most of them mark no depth step. Fixing the repair and learning only its
-target makes the gain attributable, costs 30\,ms per frame and 1.9M parameters,
-and transfers across depth models without retraining; the segmentation it
-depends on costs a further 534\,ms at the coarsest grid. It does not transfer
-across datasets, and we were unable to make it do so.
+On a depth model whose boundaries are already reasonable, post-hoc sharpening
+fails because most segmentation contours mark no depth step. Fixing the repair
+and learning only its target makes the gain attributable and transfers across
+depth models without retraining, but not across datasets. Making the selection
+independent of the training domain is the main open problem.
 
 \begin{thebibliography}{00}
 
@@ -621,7 +617,7 @@ estimation,'' in \emph{CVPR}, 2024.
 foundation model for high-quality dense prediction,'' in \emph{ICLR}, 2025.
 
 \bibitem{marigoldv2} I.~Pavlovic, T.~Wandel, A.~Obukhov, L.~Bartolomei,
-A.~Davydov, F.~Tosi, M.~Poggi, S.~S\"usstrunk, and D.~Dai, ``Marigold V2:
+A.~Davydov, F.~Tosi, M.~Poggi, S.~S{\"u}sstrunk, and D.~Dai, ``Marigold V2:
 Revisiting diffusion transformers for monocular depth estimation,''
 arXiv:2609.08084, 2026.
 
@@ -667,7 +663,7 @@ dataset for holistic indoor scene understanding,'' in \emph{ICCV}, 2021.
 autonomous driving? The KITTI vision benchmark suite,'' in \emph{CVPR},
 2012.
 
-\bibitem{eth3d} T.~Sch\"ops, J.~L.~Sch\"onberger, S.~Galliani, T.~Sattler,
+\bibitem{eth3d} T.~Sch{\"o}ps, J.~L.~Sch{\"o}nberger, S.~Galliani, T.~Sattler,
 K.~Schindler, M.~Pollefeys, and A.~Geiger, ``A multi-view stereo benchmark
 with high-resolution images and multi-camera videos,'' in \emph{CVPR}, 2017.
 

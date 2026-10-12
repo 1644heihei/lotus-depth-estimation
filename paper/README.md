@@ -47,7 +47,7 @@ TODO markers.
   otherwise replace it with the SAM candidates and the figure would show no
   selection. --max_abs_rel is the split's median AbsRel.
 
-- The pipeline figure is TikZ inside `main.tex`; it needs no external file.
+- `figures/pipeline.png` — from `make_pipeline_figure.py`. It was a PNG with no source until the fifth-version review asked for its wording to change; the README had described it as TikZ inside `main.tex`, which it never was.
 
 ## Word copies
 
