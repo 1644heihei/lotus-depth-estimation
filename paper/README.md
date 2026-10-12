@@ -48,3 +48,10 @@ TODO markers.
   selection. --max_abs_rel is the split's median AbsRel.
 
 - The pipeline figure is TikZ inside `main.tex`; it needs no external file.
+
+## Word copies
+
+`python build_docx.py` writes `output/paper_en.docx` and `output/paper_ja.docx`
+through pandoc (pip install pypandoc_binary). These are for reading and tracked
+changes, not for submission: the submission is the PDF build.sh produces, and the
+Word rendering is single-column with none of the IEEE layout.
