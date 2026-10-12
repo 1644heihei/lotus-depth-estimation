@@ -586,21 +586,14 @@ share of contour pixels on a real step is 6.07\% on NYUv2 and 22.8\% on
 Hypersim. What separates the rows appears to be whether the evaluation data
 matches the training domain, which we cannot reduce to a measured quantity.
 
-We report this because it bears on a claim the prior work in this area makes.
-Post-processing that is model-agnostic is not thereby dataset-agnostic, and the
-two kinds of generalisation can come apart.
+Post-processing that is model-agnostic is not thereby dataset-agnostic.
 
-\textbf{Headroom.} The oracle selection of Sec.~\ref{sec:gtsel} reaches
-$+43.39\%$ against our $+11.92\%$, so 72.5\% of what selection could deliver is
-unrecovered. The gap is precision: 50.2\% against the oracle's 100\%.
-
-\textbf{Metric scope.} The improvement is in boundary metrics; AbsRel and
-$\delta_1$ move too little to claim, and we claim only that they do not regress.
-
-\textbf{Label and metric share a definition.} Supervision is ``within 1\,px of a
-ground-truth depth step'' and \bfone{} scores agreement with ground-truth depth
-steps. Ground truth never enters inference and the test scenes are disjoint
-from training, but the correspondence may bear on how the result is interpreted.
+\textbf{Headroom and scope.} The oracle selection of Sec.~\ref{sec:gtsel} reaches
+$+43.39\%$ against our $+11.92\%$; the gap is precision, 50.2\% against 100\%.
+AbsRel and $\delta_1$ move too little to claim, and we claim only that they do
+not regress. Supervision and \bfone{} both refer to ground-truth depth steps;
+ground truth never enters inference, but the shared definition may bear on how
+the result is read.
 
 \section{Conclusion}
 
@@ -609,6 +602,15 @@ fails because most segmentation contours mark no depth step. Fixing the repair
 and learning only its target makes the gain attributable and transfers across
 depth models without retraining, but not across datasets. Making the selection
 independent of the training domain is the main open problem.
+
+\section*{Acknowledgment}
+
+This work used Claude Code with Claude Opus models (Anthropic) under the author's
+direction. The AI system wrote most of the code, ran and analysed the
+experiments, drafted and revised the text of every section, and wrote the
+scripts that generate Figs.~\ref{fig:qualitative} and~\ref{fig:pipeline}. The
+author directed the work, checked the results and the text, and is responsible
+for all content.
 
 \begin{thebibliography}{00}
 
