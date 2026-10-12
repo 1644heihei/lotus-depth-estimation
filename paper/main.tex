@@ -102,7 +102,7 @@ Our contributions are threefold:
 \item Evidence that it improves boundary accuracy beyond training-free controls and
       classical edge-preserving filters (Sec.~\ref{sec:experiments}).
 \item Evidence that it transfers across depth models without retraining but not
-      across datasets (Sec.~\ref{sec:experiments}, Sec.~\ref{sec:limitations}).
+      across datasets (Sec.~\ref{sec:experiments}).
 \end{enumerate}
 
 \begin{figure*}[t]
@@ -294,7 +294,7 @@ set.
 \subsection{Setup}
 
 We evaluate on the 654-frame NYUv2~\cite{nyuv2} test split, scene-disjoint from
-the training frames. The two transfer sets of Sec.~\ref{sec:limitations} are the
+the training frames. The two transfer sets of Sec.~\ref{sec:transfer} are the
 800-frame ScanNet~\cite{scannet} validation sample used by~\cite{marigoldv2} and
 a 300-frame scene-level hold-out of Hypersim~\cite{hypersim}. All three store
 depth as 16-bit millimetres and are read with each dataset's own validity mask
@@ -304,6 +304,15 @@ relative change in \bfone{} against each base model's own unsharpened
 prediction. Predictions are aligned to ground truth in their own space before
 scoring (log depth for Marigold V2, disparity for Lotus) and the alignment
 affects every variant equally.
+
+\textbf{Choice of benchmarks.} \bfone{} compares neighbouring
+pixels, so it needs ground truth dense enough for both to be valid, and three of
+the five benchmarks these models are evaluated on do not provide it: KITTI
+\cite{kitti} leaves 13.2\% of adjacent pairs valid and ETH3D \cite{eth3d} 4.1\%,
+while DIODE \cite{diode} is dense but its evaluation protocol masks the depth
+gradients this method operates on, removing 99.4\% of indoor discontinuities. We
+therefore evaluate on NYUv2 and ScanNet, and additionally on Hypersim as a third
+transfer set.
 
 \textbf{Implementation.} The selector is trained with AdamW at a learning rate of
 $3 \times 10^{-4}$, weight decay $10^{-4}$ and a cosine schedule, for 30 epochs at
@@ -475,7 +484,53 @@ budget of 1{,}330 can cover 98.9\% of them; counting over the whole valid image
 there are 2{,}941, and the same budget caps recall at 45.2\%. The segmentation
 earns its contribution by \emph{shrinking the target set}.
 
-\section{Cost}
+\subsection{Cross-dataset generalisation}
+\label{sec:transfer}
+
+The selector transfers across depth models but not across datasets.
+Table~\ref{tab:generalisation} applies the NYUv2-trained selector to ScanNet and
+Hypersim, using Marigold V2 throughout.
+
+\begin{table}[t]
+\caption{Generalisation. The selector was trained on \textnormal{NYUv2}; the depth model is
+Marigold V2 in every row. Precision is measured at the same 6\% retention.}
+\label{tab:generalisation}
+\centering
+\begin{tabular}{lrrr}
+\toprule
+Evaluation data & no selection & + selector & precision \\
+\midrule
+NYUv2 (in-domain)   & $-1.90\%$ & $\mathbf{+11.92\%}$ & 50.2\% \\
+ScanNet             & $+3.26\%$ & $+2.81\%$           & 17.4\% \\
+Hypersim            & $+2.28\%$ & $-4.64\%$           & 55.8\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+On neither held-out dataset does the selector beat using every contour. What
+fails is the transfer, not the datasets. A selector trained on 10{,}000 Hypersim
+frames reaches $+5.05\%$ on Hypersim itself, against $+2.28\%$ for no selection,
+at 88.1\% precision on a 22.8\% base rate; the same checkpoint reaches
+$-2.23\%$ on NYUv2 and $+0.39\%$ on ScanNet. Hypersim is not saturated either (sharpening at its own GT contours gives $+39.49\%$) so the method works in
+its domain as it does in NYUv2's, and stops working only when the domain changes
+between training and use.
+
+Three further remedies failed: dropping the RGB channels, sweeping the retention
+from 2\% to 20\% on ScanNet, and training on an equal mixture of 795 NYUv2 and
+795 Hypersim frames. Data volume does not account for the gap either. Cutting
+NYUv2 to 393 frames costs 2.2 points of gain ($+11.92\%$ to $+9.72\%$, two
+seeds), against the 9.1 points that separate in-domain from ScanNet.
+
+\textbf{Precision does not order the rows.} The NYUv2-trained selector is more
+precise on Hypersim than in its own domain (55.8\% against 50.2\%) yet scores
+worst there, and precision is not comparable across datasets in any case: the
+share of contour pixels on a real step is 6.07\% on NYUv2 and 22.8\% on
+Hypersim. What separates the rows appears to be whether the evaluation data
+matches the training domain, which we cannot reduce to a measured quantity.
+
+Post-processing that is model-agnostic is not thereby dataset-agnostic.
+
+\subsection{Cost}
 \label{sec:cost}
 
 Table~\ref{tab:cost} gives wall-clock time per frame on one RTX 4090, measured
@@ -521,75 +576,19 @@ floor seams, so a larger share of the candidates it produces are true boundaries
 ablation above (the segmentation helps by shrinking the target set)
 appearing along a different axis.
 
-\section{Limitations}
-\label{sec:limitations}
-
-\textbf{Two of the five standard benchmarks.} \bfone{} compares neighbouring
-pixels, so it needs ground truth dense enough for both to be valid, and three of
-the five benchmarks these models are evaluated on do not provide it: KITTI
-\cite{kitti} leaves 13.2\% of adjacent pairs valid and ETH3D \cite{eth3d} 4.1\%,
-while DIODE \cite{diode} is dense but its evaluation protocol masks the depth
-gradients this method operates on, removing 99.4\% of indoor discontinuities. We
-therefore evaluate on NYUv2 and ScanNet, and additionally on Hypersim as a third
-transfer set.
-
-\textbf{The selector transfers across depth models but not across datasets.}
-Table~\ref{tab:generalisation} applies the NYUv2-trained selector to ScanNet and
-Hypersim, using Marigold V2 throughout.
-
-\begin{table}[t]
-\caption{Generalisation. The selector was trained on \textnormal{NYUv2}; the depth model is
-Marigold V2 in every row. Precision is measured at the same 6\% retention.}
-\label{tab:generalisation}
-\centering
-\begin{tabular}{lrrr}
-\toprule
-Evaluation data & no selection & + selector & precision \\
-\midrule
-NYUv2 (in-domain)   & $-1.90\%$ & $\mathbf{+11.92\%}$ & 50.2\% \\
-ScanNet             & $+3.26\%$ & $+2.81\%$           & 17.4\% \\
-Hypersim            & $+2.28\%$ & $-4.64\%$           & 55.8\% \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-On neither held-out dataset does the selector beat using every contour. What
-fails is the transfer, not the datasets. A selector trained on 10{,}000 Hypersim
-frames reaches $+5.05\%$ on Hypersim itself, against $+2.28\%$ for no selection,
-at 88.1\% precision on a 22.8\% base rate; the same checkpoint reaches
-$-2.23\%$ on NYUv2 and $+0.39\%$ on ScanNet. Hypersim is not saturated either (sharpening at its own GT contours gives $+39.49\%$) so the method works in
-its domain as it does in NYUv2's, and stops working only when the domain changes
-between training and use.
-
-Three further remedies failed: dropping the RGB channels, sweeping the retention
-from 2\% to 20\% on ScanNet, and training on an equal mixture of 795 NYUv2 and
-795 Hypersim frames. Data volume does not account for the gap either. Cutting
-NYUv2 to 393 frames costs 2.2 points of gain ($+11.92\%$ to $+9.72\%$, two
-seeds), against the 9.1 points that separate in-domain from ScanNet.
-
-\textbf{Precision does not order the rows.} The NYUv2-trained selector is more
-precise on Hypersim than in its own domain (55.8\% against 50.2\%) yet scores
-worst there, and precision is not comparable across datasets in any case: the
-share of contour pixels on a real step is 6.07\% on NYUv2 and 22.8\% on
-Hypersim. What separates the rows appears to be whether the evaluation data
-matches the training domain, which we cannot reduce to a measured quantity.
-
-Post-processing that is model-agnostic is not thereby dataset-agnostic.
-
-\textbf{Headroom and scope.} The oracle selection of Sec.~\ref{sec:gtsel} reaches
-$+43.39\%$ against our $+11.92\%$; the gap is precision, 50.2\% against 100\%.
-AbsRel and $\delta_1$ move too little to claim, and we claim only that they do
-not regress. Supervision and \bfone{} both refer to ground-truth depth steps;
-ground truth never enters inference, but the shared definition may bear on how
-the result is read.
-
 \section{Conclusion}
 
 On a depth model whose boundaries are already reasonable, post-hoc sharpening
 fails because most segmentation contours mark no depth step. Fixing the repair
 and learning only its target makes the gain attributable and transfers across
-depth models without retraining, but not across datasets. Making the selection
-independent of the training domain is the main open problem.
+depth models without retraining, but not across datasets.
+
+\textbf{Limitations.} The oracle selection of Sec.~\ref{sec:gtsel} reaches
+$+43.39\%$ against our $+11.92\%$; the gap is precision, 50.2\% against 100\%.
+AbsRel and $\delta_1$ move too little to claim, and we claim only that they do
+not regress. Supervision and \bfone{} both refer to ground-truth depth steps;
+ground truth never enters inference, but the shared definition may bear on how
+the result is read. Making the selection independent of the training domain is the main open problem.
 
 \section*{Acknowledgment}
 
