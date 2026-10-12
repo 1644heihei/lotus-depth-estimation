@@ -428,19 +428,21 @@ alternatives, each on the base model's own predictions.
 \caption{Training-free controls, measured separately on each base model.
 \bfone{} change. The relocated row is the mean of three independent
 relocations; the two random rows are means of three draws, each spending the
-selector's own per-frame budget.}
+selector's own per-frame budget. The filter row is the best of a guided and a
+joint bilateral filter over four radii, joint bilateral at radius 1 on both.}
 \label{tab:controls}
 \centering
 \begin{tabular}{lrr}
 \toprule
-Selection & Marigold V2 & Lotus \\
+Method & Marigold V2 & Lotus \\
 \midrule
 none (all contours)            & $-1.90\%$  & $+10.31\%$ \\
-edge-preserving filter         & $-4.75\%$  & --- \\
 relocated (same sparsity)      & $-0.50\%$  & $-0.57\%$  \\
 random pixels                  & $-24.96 \pm 0.53\%$ & $-22.11 \pm 1.17\%$ \\
 random blocks                  & $-1.04 \pm 0.15\%$  & $-0.03 \pm 0.36\%$ \\
 best hand-crafted threshold    & $+1.25\%$  & $+10.46\%$ \\
+\midrule
+joint bilateral filter, $r{=}1$ & $-4.75\%$  & $-7.15\%$  \\
 \midrule
 \textbf{trained selector}      & $\mathbf{+11.92\%}$ & $\mathbf{+27.83\%}$ \\
 \textbf{learning contributes}  & $\mathbf{10.7}$\,pt & $\mathbf{17.4}$\,pt \\
@@ -449,8 +451,9 @@ best hand-crafted threshold    & $+1.25\%$  & $+10.46\%$ \\
 \end{table}
 
 The edge-preserving filter row is the classical alternative: a guided or joint
-bilateral filter with the image as guide. Both lose, monotonically in the radius,
-from $-4.75\%$ at the gentlest setting to $-50.14\%$. A filter can only smooth,
+bilateral filter with the image as guide. Both lose on both models, monotonically
+in the radius, from $-4.75\%$ and $-7.15\%$ at the gentlest setting to
+$-50.14\%$ and $-45.30\%$. A filter can only smooth,
 and a smoothed boundary is what \bfone{} counts against; discarding the band and
 refilling each side from itself is what restores a step instead.
 
