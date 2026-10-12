@@ -74,7 +74,7 @@ model untouched. Prior work learns \emph{how} to move the
 depth~\cite{ramamonjisoa,sharpnet,edgeguided}. We take the opposite
 decomposition: fix the repair, and learn \emph{where} it should act.
 
-The reason is empirical. Section~\ref{sec:diagnosis} measures a
+The reason is empirical. Section~\ref{sec:why} measures a
 barrier-sharpening operation applied at every contour a segmentation
 model~\cite{sam} draws, and finds it \emph{costs} 1.90\% of boundary \bfone{}
 on Marigold V2~\cite{marigoldv2}. The same measurement shows why: contour
@@ -89,7 +89,7 @@ Our contributions:
 \begin{enumerate}
 \item A measurement that identifies selection as the bottleneck in post-hoc
       boundary sharpening, including an oracle that reverses the sign of the
-      effect without moving any contour (Sec.~\ref{sec:diagnosis}).
+      effect without moving any contour (Sec.~\ref{sec:gtsel}).
 \item A method that fixes the repair operation and learns only the selection, so
       that what the learning contributes is directly attributable
       (Sec.~\ref{sec:method}).
@@ -174,10 +174,24 @@ reports \bfone{} on NYUv2, so we measure the baselines ourselves.
 refine masks with depth as a prior; we use it in the opposite direction, as a
 source of candidate depth boundaries that a learned selector then filters.
 
-\section{Diagnosis: selection is the bottleneck}
-\label{sec:diagnosis}
+\section{Method}
+\label{sec:method}
+
+\begin{figure}[t]
+\centerline{\includegraphics[width=\columnwidth]{figures/pipeline.png}}
+\caption{Only the selector is trained. The depth model and the segmentation
+model are frozen, and the repair is a fixed operation with no parameters, so
+the gain is attributable to the selection alone.}
+\label{fig:pipeline}
+\end{figure}
+
+Fig.~\ref{fig:pipeline} shows the pipeline. The depth model and the
+segmentation model are frozen. The repair is the fixed operation of
+Sec.~\ref{sec:repair}, which learns nothing. The only trained component is the
+selector, and Sec.~\ref{sec:why} is the measurement that says why it is needed.
 
 \subsection{The repair operation}
+\label{sec:repair}
 
 We call the operation \emph{barrier sharpening}: it treats each selected
 contour as a barrier across which depth may not be interpolated. Let $z$ be a
@@ -202,6 +216,7 @@ keeping 6\% of the contour pixels leaves fragments rather than whole outlines.
 Both effects weaken the repair, and both are present in every number we report.
 
 \subsection{Applying it everywhere fails}
+\label{sec:why}
 
 Table~\ref{tab:diagnosis} applies the operation at every contour that Segment
 Anything draws on NYUv2, using Marigold V2 as the base. Boundary \bfone{} falls
@@ -239,6 +254,7 @@ discards a band of smooth surface and refills it from two sides that agree,
 which can only add noise.
 
 \subsection{Selecting with ground truth reverses the sign}
+\label{sec:gtsel}
 
 Two tolerances appear above and they are not complements of one another, so we
 state both. The 79.8\% uses an eight-pixel window, which is generous; the
@@ -251,20 +267,7 @@ $-1.90\%$ to $+43.39\%$
 isolates selection as the binding constraint and sets the target for a learned
 selector.
 
-\section{Method}
-\label{sec:method}
-
-\begin{figure}[t]
-\centerline{\includegraphics[width=\columnwidth]{figures/pipeline.png}}
-\caption{Only the selector is trained. The depth model and the segmentation
-model are frozen, and the repair is a fixed operation with no parameters, so
-the gain is attributable to the selection alone.}
-\label{fig:pipeline}
-\end{figure}
-
-Fig.~\ref{fig:pipeline} shows the pipeline. The depth model and the
-segmentation model are frozen. The repair is the fixed operation of
-Sec.~\ref{sec:diagnosis}. The only trained component is the selector.
+\subsection{The selector}
 
 \textbf{Inputs and output.} The selector is a four-level U-Net with 1{,}928{,}993
 parameters. It takes the RGB image (3 channels), the predicted depth (1), and
@@ -584,7 +587,7 @@ We report this because it bears on a claim the prior work in this area makes.
 Post-processing that is model-agnostic is not thereby dataset-agnostic, and the
 two kinds of generalisation evidently come apart.
 
-\textbf{Headroom.} The oracle selection of Sec.~\ref{sec:diagnosis} reaches
+\textbf{Headroom.} The oracle selection of Sec.~\ref{sec:gtsel} reaches
 $+43.39\%$ against our $+11.92\%$, so 72.5\% of what selection could deliver is
 unrecovered. The gap is precision: 50.2\% against the oracle's 100\%.
 
