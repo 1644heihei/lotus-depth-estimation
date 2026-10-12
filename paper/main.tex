@@ -365,8 +365,8 @@ them; they are included in the pooled figure, where they contribute zero.
 \subsection{A second boundary metric}
 
 An improvement visible in one metric may be an improvement in that metric's
-definition. We therefore also report Soft Edge Error, the boundary metric
-Marigold V2's own authors use, transcribed from their implementation.
+definition. We therefore also report Soft Edge Error \cite{smdnets}, the
+boundary metric Marigold V2 adopts, transcribed from its implementation.
 SEE$_k$ averages, over ground-truth boundary pixels, the smallest absolute error
 between the prediction and any ground-truth depth in a $k\times k$
 neighbourhood; it forgives a displaced boundary and punishes a blurred one.
@@ -523,8 +523,8 @@ appearing along a different axis.
 \label{sec:limitations}
 
 \textbf{Two public benchmarks, because a boundary metric needs dense ground
-truth.} The base models are evaluated on five benchmarks: NYUv2, KITTI,
-ScanNet, ETH3D and DIODE. \bfone{} compares NEIGHBOURING pixels' depth ratio, so
+truth.} The base models are evaluated on five benchmarks: NYUv2, KITTI
+\cite{kitti}, ScanNet, ETH3D \cite{eth3d} and DIODE \cite{diode}. \bfone{} compares NEIGHBOURING pixels' depth ratio, so
 it needs ground truth dense enough for both to exist, and on three of the five
 it is not. KITTI's LiDAR leaves 13.2\% of adjacent pairs with both pixels valid;
 ETH3D, which projects a laser point cloud onto 24-megapixel DSLR frames, leaves
@@ -631,6 +631,9 @@ easier than you think,'' in \emph{WACV}, 2025.
 \bibitem{depthpro} A.~Bochkovskii et al., ``Depth Pro: Sharp monocular metric
 depth in less than a second,'' in \emph{ICLR}, 2025.
 
+\bibitem{smdnets} F.~Tosi, Y.~Liao, C.~Schmitt, and A.~Geiger, ``SMD-Nets:
+Stereo mixture density networks,'' in \emph{CVPR}, 2021.
+
 \bibitem{ramamonjisoa} M.~Ramamonjisoa, Y.~Du, and V.~Lepetit, ``Predicting
 sharp and accurate occlusion boundaries in monocular depth estimation using
 displacement fields,'' in \emph{CVPR}, 2020.
@@ -658,6 +661,17 @@ scenes,'' in \emph{CVPR}, 2017.
 
 \bibitem{hypersim} M.~Roberts et al., ``Hypersim: A photorealistic synthetic
 dataset for holistic indoor scene understanding,'' in \emph{ICCV}, 2021.
+
+\bibitem{kitti} A.~Geiger, P.~Lenz, and R.~Urtasun, ``Are we ready for
+autonomous driving? The KITTI vision benchmark suite,'' in \emph{CVPR},
+2012.
+
+\bibitem{eth3d} T.~Sch\"ops, J.~L.~Sch\"onberger, S.~Galliani, T.~Sattler,
+K.~Schindler, M.~Pollefeys, and A.~Geiger, ``A multi-view stereo benchmark
+with high-resolution images and multi-camera videos,'' in \emph{CVPR}, 2017.
+
+\bibitem{diode} I.~Vasiljevic et al., ``DIODE: A dense indoor and outdoor
+depth dataset,'' arXiv:1908.00463, 2019.
 
 \end{thebibliography}
 

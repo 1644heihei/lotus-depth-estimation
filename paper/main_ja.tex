@@ -315,9 +315,8 @@ Lotus・8.68 億・視差 & 0.0693 & $+10.31\%$ & $\mathbf{+27.83 \pm 1.27\%}$ \
 
 \subsection{もう一つの境界指標}
 一つの指標でしか見えない改善は、その指標の定義による改善かもしれない。そこで
-\textbf{Soft Edge Error} でも測った。Marigold V2 \cite{marigoldv2} の著者自身が
-使う境界指標で、
-その実装から移植した。SEE$_k$ は、正解の境界画素において、$k \times k$ 近傍のどれかの
+\textbf{Soft Edge Error} \cite{smdnets} でも測った。Marigold V2 が採用している
+境界指標で、その実装から移植した。SEE$_k$ は、正解の境界画素において、$k \times k$ 近傍のどれかの
 正解深度との絶対誤差の最小値を平均する。境界のズレは許し、にじみは罰する。
 \bfone{} と違って深度単位の絶対誤差なのでスケール不変ではなく、採点前に整合させる必要が
 ある。\textbf{小さいほど良い。}
@@ -458,7 +457,8 @@ grid 48 は grid 16 より 1 枚あたり 3{,}200 画素多く輪郭を見つけ
 \label{sec:limitations}
 
 \textbf{公開ベンチマーク 2 つに限ったのは、境界指標が密な正解深度を要求するためである。}
-本研究が後処理する土台モデルは、NYUv2・KITTI・ScanNet・ETH3D・DIODE の 5 つで
+本研究が後処理する土台モデルは、NYUv2・KITTI \cite{kitti}・ScanNet・
+ETH3D \cite{eth3d}・DIODE \cite{diode} の 5 つで
 評価されている。\bfone{} は\emph{隣接画素}の深度比を比較するので、両方が有効である
 だけの密度を要し、5 つのうち 3 つはそれを満たさない。KITTI の LiDAR では隣接ペアが
 両方有効なのは 13.2\%、ETH3D（レーザー点群を 2440 万画素の DSLR 画像へ投影）では
@@ -556,6 +556,9 @@ easier than you think,'' in \emph{WACV}, 2025.
 \bibitem{depthpro} A.~Bochkovskii et al., ``Depth Pro: Sharp monocular metric
 depth in less than a second,'' in \emph{ICLR}, 2025.
 
+\bibitem{smdnets} F.~Tosi, Y.~Liao, C.~Schmitt, and A.~Geiger, ``SMD-Nets:
+Stereo mixture density networks,'' in \emph{CVPR}, 2021.
+
 \bibitem{ramamonjisoa} M.~Ramamonjisoa, Y.~Du, and V.~Lepetit, ``Predicting
 sharp and accurate occlusion boundaries in monocular depth estimation using
 displacement fields,'' in \emph{CVPR}, 2020.
@@ -583,6 +586,17 @@ scenes,'' in \emph{CVPR}, 2017.
 
 \bibitem{hypersim} M.~Roberts et al., ``Hypersim: A photorealistic synthetic
 dataset for holistic indoor scene understanding,'' in \emph{ICCV}, 2021.
+
+\bibitem{kitti} A.~Geiger, P.~Lenz, and R.~Urtasun, ``Are we ready for
+autonomous driving? The KITTI vision benchmark suite,'' in \emph{CVPR},
+2012.
+
+\bibitem{eth3d} T.~Sch\"ops, J.~L.~Sch\"onberger, S.~Galliani, T.~Sattler,
+K.~Schindler, M.~Pollefeys, and A.~Geiger, ``A multi-view stereo benchmark
+with high-resolution images and multi-camera videos,'' in \emph{CVPR}, 2017.
+
+\bibitem{diode} I.~Vasiljevic et al., ``DIODE: A dense indoor and outdoor
+depth dataset,'' arXiv:1908.00463, 2019.
 
 \end{thebibliography}
 
