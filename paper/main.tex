@@ -32,27 +32,21 @@ TODO email}}
 \maketitle
 
 \begin{abstract}
-Diffusion-based monocular depth estimators produce accurate surfaces but blurred
-depth discontinuities. A natural remedy is to sharpen the predicted depth at
-contours found by a segmentation model, yet applying a barrier-sharpening
-operation at every contour lowers boundary F1 by 1.90 percent on NYUv2. We show
-by measurement that the bottleneck is not where the contours are, since a true
-depth step is a median of one pixel from the nearest contour, but which contours
-to use: 79.8 percent of them have no depth step anywhere within an eight-pixel
-window. Keeping with ground truth only the 6.07 percent that lie within one pixel
-of a true step, without moving a single contour, turns a loss of 1.90 percent
-into a gain of 43.39 percent. We therefore fix the repair operation and learn
-only where to apply it. A selector of 1.9 million parameters, trained for 16
-minutes on 654 NYUv2 frames, raises boundary F1 by 11.92 percent over four
-seeds with a standard deviation of 0.90, and the same four selectors, applied
-with no retraining to a second depth model of a different architecture and
-output representation, raise its boundary F1 by 27.83 percent with a standard
-deviation of 1.27. Five training-free controls, measured on each model's own
-predictions, place the learning's contribution at 10.7 and 17.4 points. The
-selector and the repair add 30 milliseconds per frame on top of the depth
-model's 495, and the segmentation they depend on at least 534 more. We also report a
-negative result: the selector transfers across depth models but not across
-datasets, and the remedies we tried failed to fix it.
+Diffusion-based monocular depth estimators are accurate on surfaces but smooth
+the depth discontinuity at an object boundary. Sharpening the prediction at the
+contours a segmentation model draws is a natural remedy, yet applying it at
+every contour lowers boundary accuracy on NYUv2. We show by measurement that
+the cause is not where the contours lie but that most of them carry no depth
+step, so that sharpening there introduces discontinuities the scene does not
+have. Selecting the correct contours with ground truth, without moving any of
+them, reverses the sign of the effect. We therefore fix the repair operation and
+learn only which contours to apply it to. On NYUv2 the selector improves
+boundary F1 by 11.9 percent over four seeds, and the same selectors, applied
+without retraining to a depth model of a different architecture and output
+representation, improve it by 27.8 percent. Training-free controls place the
+contribution of the learning at 10.7 and 17.4 points. We also report that the
+selector does not transfer across datasets, and that the remedies we tried did
+not resolve it.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -107,18 +101,18 @@ transfer across datasets, and that our attempts to fix that failed.
 
 \begin{figure*}[t]
 \centerline{\includegraphics[width=\textwidth]{figures/qualitative_a.png}}
-\caption{What the method does. Top: the whole frame; nothing outside the
-selected contours moves. Middle: a 72\,px crop --- the baseline's desk edge is
-spread over several pixels, the sharpened map restores the step. Bottom: the
-depth discontinuities each map contains, which is what \bfone{} compares; green
-is in both, red is in the prediction only, grey is in ground truth only. The
-frame is ranked
-33rd of the 326 frames whose AbsRel is at or below the split's median of
-0.0303, ordered by ABSOLUTE \bfone{} gain; by relative gain its $+14.36\%$
-sits near the split's median of $+13.15\%$. We restrict the figure to the more
-accurate half so that it shows sharpening a good prediction rather than
-rescuing a broken one. Panels state each frame's AbsRel and rank so that a
-reader can see which part of the distribution is being shown.}
+\caption{What the method does, on a dining-room frame. Top: the whole frame;
+nothing outside the selected contours moves. Middle: a 48\,px crop at the
+chair-back boundary, with a depth profile across it. The baseline misses both
+steps ground truth has; the sharpened map reproduces them. The three maps in
+the crop share a colour scale taken from the crop, since the repair rewrites a
+band two pixels wide. Bottom: the depth discontinuities each map contains,
+which is what \bfone{} compares; green is in both, red is in the prediction
+only, grey is in ground truth only. The frame is ranked 140th of the 326 whose
+AbsRel is at or below the split median of 0.0303, by absolute \bfone{} gain;
+its relative gain of $+9.01\%$ is close to the split median of $+13.15\%$.
+Restricting to the more accurate half shows sharpening applied to a good
+prediction rather than to a broken one.}
 \label{fig:qualitative}
 \end{figure*}
 
@@ -153,15 +147,10 @@ learn how to move depth. None, to our knowledge, fixes the repair and learns
 only its target, and none uses a promptable segmentation model as the source of
 candidate boundaries.
 
-\textbf{We do not compare directly against~\cite{ramamonjisoa}.} Its code is
-public but no trained weights are released, the README documents no inference
-procedure, and it is written against the PyTorch 0.4 API, which current PyTorch
-no longer provides. We instead ablate our own use of segmentation
-(Sec.~\ref{sec:experiments}), which answers the related question of how much
-the external segmentation contributes. That is an ablation of our method, not a
-comparison against prior work, and we do not present it as one. Since training
-here costs 16 minutes, a re-implementation evaluated on this split would be the
-right comparison, and it remains to be done.
+\textbf{We do not compare directly against~\cite{ramamonjisoa}.} No trained
+weights are released and the public implementation does not run under a current
+environment, so a direct comparison is out of reach here. Reimplementing it on
+the same split is left as future work.
 
 \textbf{Boundary metrics.}
 We adopt the scale-invariant boundary \bfone{} of Depth Pro~\cite{depthpro},
@@ -211,7 +200,7 @@ operation is a silent no-op.
 The separation of the two sides holds only where a contour closes or reaches the
 image border. Where it ends inside the image the valid region stays connected
 around that end, so both sides of the band belong to one component there and the
-refill is one-sided in name only. Selection makes this more common, not less:
+one-sided interpolation does not hold there. Selection makes this more common:
 keeping 6\% of the contour pixels leaves fragments rather than whole outlines.
 Both effects weaken the repair, and both are present in every number we report.
 
@@ -222,9 +211,9 @@ Table~\ref{tab:diagnosis} applies the operation at every contour that Segment
 Anything draws on NYUv2, using Marigold V2 as the base. Boundary \bfone{} falls
 by 1.90\%. This diagnosis is specific to a model whose boundaries are already
 reasonable: on Lotus the same unselected sharpening \emph{gains} 10.31\%
-(Table~\ref{tab:controls}), because its boundaries start blunter --- its
-baseline \bfone{} is 0.0693 against Marigold V2's 0.0884 --- so there is more to
-gain and less to spoil. Selection is what makes the operation safe on the first
+(Table~\ref{tab:controls}), because its boundaries start blunter (its
+baseline \bfone{} is 0.0693 against Marigold V2's 0.0884) so the room for improvement is larger and the
+cost of degradation smaller. Selection is what makes the operation safe on the first
 model, and it adds substantially on both.
 
 \begin{table}[t]
@@ -249,9 +238,8 @@ Measuring from each true depth discontinuity to the nearest contour gives a
 median of 1.00\,px, with 66.9\% within 1\,px and 76.9\% within 2\,px. The
 contours are where the boundaries are. The failure is in the other direction:
 79.8\% of the contour pixels have no depth step anywhere within an eight-pixel
-window --- wallpaper patterns, floor seams, poster edges. Sharpening there
-discards a band of smooth surface and refills it from two sides that agree,
-which can only add noise.
+window, wallpaper patterns, floor seams, poster edges. Sharpening there
+introduces a discontinuity into a region that has none.
 
 \subsection{Selecting with ground truth reverses the sign}
 \label{sec:gtsel}
@@ -259,15 +247,16 @@ which can only add noise.
 Two tolerances appear above and they are not complements of one another, so we
 state both. The 79.8\% uses an eight-pixel window, which is generous; the
 selection below uses one pixel, which is strict. Of the 22{,}167 segmentation
-contour pixels in an average frame --- 10.6\% of its valid pixels --- 1{,}345,
+contour pixels in an average frame (10.6\% of its valid pixels) 1{,}345,
 or 6.07\%, lie within 1\,px of a true discontinuity. An oracle that keeps exactly
 those, and leaves every kept contour where it is, moves the effect from
 $-1.90\%$ to $+43.39\%$
-(Table~\ref{tab:diagnosis}). No contour moves; only the set changes. This
-isolates selection as the binding constraint and sets the target for a learned
-selector.
+(Table~\ref{tab:diagnosis}). The contours are not moved in this experiment; only the set they are drawn from
+differs. The loss is therefore attributable to which contours are sharpened rather
+than to where they lie, and Sec.~\ref{sec:selector} learns that selection.
 
 \subsection{The selector}
+\label{sec:selector}
 
 \textbf{Inputs and output.} The selector is a four-level U-Net with 1{,}928{,}993
 parameters. It takes the RGB image (3 channels), the predicted depth (1), and
@@ -287,8 +276,8 @@ what that approximation is worth.
 thresholding the probability. A fixed threshold keeps a different amount
 depending on how many contours a scene happens to contain, so the budget the
 repair spends would drift from frame to frame. The budget is 6\% because that is
-the positive rate: on the training frames, 6.07\% of contour pixels lie within
-1\,px of a true step. It is not fitted to the test split.
+the positive rate on the training frames, where 6.066\% of contour pixels lie
+within 1\,px of a true step.
 
 \textbf{Loss and training.} Binary cross-entropy masked to contour pixels; the
 89\% of the valid image that carries no contour is not a question the selector
@@ -297,11 +286,12 @@ discontinuity in ground truth, where a discontinuity is a depth ratio above
 10\%. We chose that threshold on a validation split rather than on the test
 set: scoring \bfone{} on the 141 frames of the 40 scenes held out of the 795
 training frames, 10\% gives $+12.74\%$ against $+8.66$, $+6.29$ and $+5.28\%$
-for 15, 20 and 25\%. Raising it thins the positives --- from 6.07\% of contour
-pixels to 2.13\% --- so the fixed budget is then spent mostly on negatives.
-Nothing in this work is selected on the test split except where
-Sec.~\ref{sec:controls} says otherwise, which is a control and not the method. Ground truth is used
-only to generate these labels and never appears in the inference path. The 795
+for 15, 20 and 25\%. Raising it thins the positives (from 6.07\% of contour
+pixels to 2.13\%) so the fixed budget is then spent mostly on negatives.
+Every hyperparameter of the method, the threshold and the retention alike, was set
+on the validation split; the one exception is a control, and Sec.~\ref{sec:controls}
+states it there. Ground truth is used only to generate these labels and never
+appears in the inference path. The 795
 NYUv2 training frames are split by scene into 654 for training and 141 for
 validation; the deployed checkpoint is the best-validation epoch and has seen
 only those 654, which are a different set from the 654 test frames. Training
@@ -322,7 +312,7 @@ and depth range; NYUv2 additionally uses the Eigen crop. The metric is the
 scale-invariant boundary \bfone{} of Depth Pro~\cite{depthpro}. We report the
 relative change in \bfone{} against each base model's own unsharpened
 prediction. Predictions are aligned to ground truth in their own space before
-scoring --- log depth for Marigold V2, disparity for Lotus --- and the alignment
+scoring (log depth for Marigold V2, disparity for Lotus) and the alignment
 affects every variant equally.
 
 \subsection{Main result}
@@ -374,8 +364,7 @@ Unlike \bfone{} it is an absolute error in depth units, so it is not
 scale-invariant and the prediction must be aligned first. Lower is better.
 
 \begin{table}[t]
-\caption{Soft Edge Error, for one of the four seeds of Table~\ref{tab:main} ---
-the one scoring $+12.49\%$, second best of the four --- applied unchanged to
+\caption{Soft Edge Error, for one of the four seeds of Table~\ref{tab:main} (the one scoring $+12.49\%$, second best of the four) applied unchanged to
 both models. Lower is
 better; percentages are relative to each model's own baseline. ``GT contours''
 sharpens at the ground-truth discontinuities themselves and is not reachable by
@@ -410,7 +399,7 @@ Their magnitudes are not comparable and should not be read as such. SEE is an
 absolute error averaged over boundary pixels, floored by how accurate the
 model's depth values are there, so sharpening at GT contours raises \bfone{} by
 $209.8\%$ while lowering SEE$_5$ by $5.09\%$. The improvement also shrinks as
-$k$ grows --- from $-11.44\%$ to $-2.91\%$ at GT contours --- which is what a
+$k$ grows (from $-11.44\%$ to $-2.91\%$ at GT contours) which is what a
 metric that forgives more displacement at larger $k$ should do.
 
 \subsection{Controls}
@@ -467,7 +456,7 @@ Removing the segmentation model entirely, so that the selector must find
 boundaries itself from RGB and depth and every valid pixel is a candidate, gives
 $+7.30\%$. Both halves of this ablation come from a single seed, so the figure
 to compare against is that seed's $+12.49\%$: the segmentation is worth 5.19
-points, 42\% of that run's gain. The mechanism is recall, not precision. On
+points, 42\% of that run's gain. This contribution arises on the recall side rather than the precision side. On
 segmentation contours the true steps number 1{,}345 pixels per frame and the
 budget of 1{,}330 can cover 98.9\% of them; counting over the whole valid image
 there are 2{,}941, and the same budget caps recall at 45.2\%. The segmentation
@@ -482,7 +471,7 @@ the released configuration's default, so its 21.3 billion parameters occupy
 roughly 10.6\,GB and the model fits a 24\,GB card; at bf16 it would not.
 
 \begin{table}[t]
-\caption{Per-frame cost and the gain it buys. Grids 16 and 48 are means over the
+\caption{Per-frame running time and the improvement obtained. Grids 16 and 48 are means over the
 four seeds of Table~\ref{tab:main} with their standard deviation; the other two
 rows are the single seed scoring $+12.49\%$ there. The segmentation point grid is
 the only knob that matters.}
@@ -502,21 +491,21 @@ depth model only        & 495   & ---        & --- \\
 \end{table}
 
 The selector costs 12.0\,ms and the repair 18.3\,ms, so what this work adds is
-30.3\,ms --- 6\% of the depth model's own 495\,ms. The segmentation dominates
+30.3\,ms, 6\% of the depth model's own 495\,ms. The segmentation dominates
 everything else, at 534\,ms to 2{,}603\,ms depending on its point grid.
 
-\textbf{A coarse grid suffices.} Grid 16 reaches 92\% of grid 48's gain for
+\textbf{A coarse grid gives a comparable gain.} Grid 16 reaches 92\% of grid 48's gain for
 20\% of the segmentation cost, making the whole pipeline 3.0$\times$ faster and
-2.7$\times$ cheaper per point of \bfone{}. The 0.90-point gap is smaller than
+cuts the time per point of \bfone{} improvement to about one in 2.7. The 0.90-point gap is smaller than
 the 0.90 standard deviation across seeds, so no single pair of runs could settle
 the ordering; paired by seed, however, grid 48 is ahead in all four, by
 $0.90 \pm 0.29$ points ($p = 0.009$). The difference is consistent and small. Precision runs the other way across
 the grids (51.6\%, 50.6\%, 50.2\% at grids 16, 32, 48, one seed), which says
 what the coarse grid is doing: it traces large objects and misses wallpaper patterns and
-floor seams, so the candidate set it produces is already cleaner. Grid 48 finds
+floor seams, so a larger share of the candidates it produces are true boundaries. Grid 48 finds
 3{,}200 more contour pixels per frame than grid 16 and buys 0.90 points of
 \bfone{} with them, so most of those are false positives. This is the same mechanism as the
-ablation above --- the segmentation helps by shrinking the target set ---
+ablation above (the segmentation helps by shrinking the target set)
 appearing along a different axis.
 
 \section{Limitations}
@@ -530,7 +519,7 @@ it is not. KITTI's LiDAR leaves 13.2\% of adjacent pairs with both pixels valid;
 ETH3D, which projects a laser point cloud onto 24-megapixel DSLR frames, leaves
 4.1\%. DIODE is dense (99.7\% indoors), but its standard evaluation protocol
 masks out pixels whose depth gradient exceeds a threshold, because its laser
-ground truth is unreliable at edges --- and that filter removes 99.4\% of the
+ground truth is unreliable at edges, and that filter removes 99.4\% of the
 depth discontinuities indoors and 100\% outdoors, which is precisely what this
 method operates on. Of the five, \bfone{} is well defined on NYUv2 and ScanNet,
 and we evaluate on both. We also evaluate on Hypersim, which is not one of the
@@ -560,8 +549,7 @@ On neither held-out dataset does the selector beat using every contour. What
 fails is the transfer, not the datasets. A selector trained on 10{,}000 Hypersim
 frames reaches $+5.05\%$ on Hypersim itself, against $+2.28\%$ for no selection,
 at 88.1\% precision on a 22.8\% base rate; the same checkpoint reaches
-$-2.23\%$ on NYUv2 and $+0.39\%$ on ScanNet. Hypersim is not saturated either
---- sharpening at its own GT contours gives $+39.49\%$ --- so the method works in
+$-2.23\%$ on NYUv2 and $+0.39\%$ on ScanNet. Hypersim is not saturated either (sharpening at its own GT contours gives $+39.49\%$) so the method works in
 its domain as it does in NYUv2's, and stops working only when the domain changes
 between training and use.
 
@@ -569,7 +557,7 @@ Three further remedies failed. Dropping the RGB channels made transfer worse
 rather than better. Sweeping the retention from 2\% to 20\% on ScanNet found no
 setting that reaches the no-selection result. Training on an equal mixture of 795
 NYUv2 and 795 Hypersim frames damaged the in-domain result without helping
-transfer. Data volume cannot explain the transfer failure, though it is not free:
+transfer. Data volume cannot explain the transfer failure, though it is not without effect:
 cutting NYUv2 to 393 frames costs 3.2 points of precision (50.2\% to 47.0\%) and
 2.2 points of gain ($+11.92\%$ to $+9.72\%$), 18\% of it, measured over two
 seeds against the four of Table~\ref{tab:main}. The gap between in-domain and
@@ -578,14 +566,14 @@ ScanNet is 9.1 points, four times larger.
 \textbf{Precision does not order the rows.} The NYUv2-trained selector is more
 precise on Hypersim than in its own domain (55.8\% against 50.2\%) and scores
 worst there. Precision is not comparable across datasets in any case, since the
-share of contour pixels sitting on a real step differs between them --- 6.07\% on
+share of contour pixels sitting on a real step differs between them, 6.07\% on
 NYUv2 against 22.8\% on Hypersim. What separates the rows is whether the
 evaluation data matches the selector's training domain, and we cannot reduce
 that to a quantity we measure.
 
 We report this because it bears on a claim the prior work in this area makes.
 Post-processing that is model-agnostic is not thereby dataset-agnostic, and the
-two kinds of generalisation evidently come apart.
+two kinds of generalisation can come apart.
 
 \textbf{Headroom.} The oracle selection of Sec.~\ref{sec:gtsel} reaches
 $+43.39\%$ against our $+11.92\%$, so 72.5\% of what selection could deliver is
@@ -598,7 +586,7 @@ only that they do not regress.
 \textbf{Label and metric share a definition.} Supervision is ``within 1\,px of a
 ground-truth depth step'' and \bfone{} scores agreement with ground-truth depth
 steps. Ground truth never enters inference and the test scenes are disjoint
-from training, but the correspondence should be read with that in mind.
+from training, but the correspondence may bear on how the result is interpreted.
 
 \section{Conclusion}
 
