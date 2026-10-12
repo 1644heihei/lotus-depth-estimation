@@ -81,19 +81,14 @@ constraint.
 Our contributions:
 
 \begin{enumerate}
-\item A measurement that identifies selection as the bottleneck in post-hoc
-      boundary sharpening, including an oracle that reverses the sign of the
-      effect without moving any contour (Sec.~\ref{sec:gtsel}).
-\item A method that fixes the repair operation and learns only the selection, so
-      that what the learning contributes is directly attributable
-      (Sec.~\ref{sec:method}).
-\item Results on two depth models that differ in architecture, parameter count
-      and output representation, with four seeds and five training-free
-      controls measured on each model's own predictions
-      (Sec.~\ref{sec:experiments}).
-\item A cost analysis showing the added work is 30\,ms per frame and that a
-      coarse segmentation grid gives 92\% of the gain at 20\% of the
-      segmentation cost (Sec.~\ref{sec:cost}).
+\item An identification of why post-hoc boundary sharpening fails: not the
+      localisation of the contours but the selection among them
+      (Sec.~\ref{sec:gtsel}).
+\item A method that fixes the repair and learns only its target, so that what
+      the learning contributes is attributable (Sec.~\ref{sec:selector}).
+\item Evidence that the result transfers across depth models without
+      retraining and does not transfer across datasets
+      (Sec.~\ref{sec:experiments}, Sec.~\ref{sec:limitations}).
 \end{enumerate}
 
 We also report, in Sec.~\ref{sec:limitations}, that the selector does not
@@ -104,15 +99,12 @@ transfer across datasets, and that our attempts to fix that failed.
 \caption{What the method does, on a dining-room frame. Top: the whole frame;
 nothing outside the selected contours moves. Middle: a 48\,px crop at the
 chair-back boundary, with a depth profile across it. The baseline misses both
-steps ground truth has; the sharpened map reproduces them. The three maps in
-the crop share a colour scale taken from the crop, since the repair rewrites a
-band two pixels wide. Bottom: the depth discontinuities each map contains,
+steps ground truth has; the sharpened map reproduces them. The three maps in the crop share a colour scale taken from it. Bottom: the depth discontinuities each map contains,
 which is what \bfone{} compares; green is in both, red is in the prediction
 only, grey is in ground truth only. The frame is ranked 140th of the 326 whose
 AbsRel is at or below the split median of 0.0303, by absolute \bfone{} gain;
 its relative gain of $+9.01\%$ is close to the split median of $+13.15\%$.
-Restricting to the more accurate half shows sharpening applied to a good
-prediction rather than to a broken one.}
+The restriction keeps the example one of sharpening a good prediction.}
 \label{fig:qualitative}
 \end{figure*}
 
@@ -349,7 +341,9 @@ those four selectors on Lotus, not of four Lotus-trained models.
 
 \begin{table}[t]
 \caption{Main result. Four seeds; $\pm$ is one standard deviation. The same four
-selectors are applied to both models and were trained only on the first.}
+selectors are applied to both models and were trained only on the first. In
+absolute terms the selector takes \bfone{} from 0.0884 to 0.0989 and from
+0.0693 to 0.0886.}
 \label{tab:main}
 \centering
 \setlength{\tabcolsep}{4pt}
@@ -444,6 +438,7 @@ selector's own per-frame budget.}
 Selection & Marigold V2 & Lotus \\
 \midrule
 none (all contours)            & $-1.90\%$  & $+10.31\%$ \\
+edge-preserving filter         & $-4.75\%$  & --- \\
 relocated (same sparsity)      & $-0.50\%$  & $-0.57\%$  \\
 random pixels                  & $-24.96 \pm 0.53\%$ & $-22.11 \pm 1.17\%$ \\
 random blocks                  & $-1.04 \pm 0.15\%$  & $-0.03 \pm 0.36\%$ \\
@@ -454,6 +449,12 @@ best hand-crafted threshold    & $+1.25\%$  & $+10.46\%$ \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+The edge-preserving filter row is the classical alternative: a guided or joint
+bilateral filter with the image as guide. Both lose, monotonically in the radius,
+from $-4.75\%$ at the gentlest setting to $-50.14\%$. A filter can only smooth,
+and a smoothed boundary is what \bfone{} counts against; discarding the band and
+refilling each side from itself is what restores a step instead.
 
 The hand-crafted control thresholds a local descriptor of the predicted depth's
 log-gradient. We select its feature by the final metric on the test split rather
