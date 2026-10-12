@@ -33,21 +33,16 @@ TODO email}}
 \maketitle
 
 \begin{abstract}
-Diffusion-based monocular depth estimators are accurate on surfaces but smooth
-the depth discontinuity at an object boundary. Sharpening the prediction at the
-contours a segmentation model draws is a natural remedy, yet applying it at
-every contour lowers boundary accuracy on NYUv2. We show by measurement that
-the cause is not where the contours lie but that most of them carry no depth
-step, so that sharpening there introduces discontinuities the scene does not
-have. Selecting the correct contours with ground truth, without moving any of
-them, reverses the sign of the effect. We therefore fix the repair operation and
-learn only which contours to apply it to. On NYUv2 the selector improves
-boundary F1 by 11.9 percent over four seeds, and the same selectors, applied
-without retraining to a depth model of a different architecture and output
-representation, improve it by 27.8 percent. Training-free controls place the
-contribution of the learning at 10.7 and 17.4 percentage points. We also report that the
-selector does not transfer across datasets, and that the remedies we tried did
-not resolve it.
+Diffusion-based monocular depth estimators are accurate on smooth surfaces but blur
+the depth discontinuities at object boundaries. Sharpening the predicted depth at
+the contours found by a segmentation model is a natural remedy, yet applying it at
+every contour lowers boundary F1 by 1.9 percent. Observing that this loss arises
+from sharpening contours that carry no depth step, we propose to keep the
+sharpening operation fixed and to learn only which contours it should be applied
+to. On NYUv2 the method improves boundary F1 by 11.9 percent averaged over four
+seeds, and the same selector, applied without retraining to a depth model of a
+different architecture and output representation, improves it by 27.8 percent. We
+also report that the selector does not transfer across datasets.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -56,40 +51,58 @@ monocular depth estimation, depth boundaries, post-processing, diffusion models
 
 \section{Introduction}
 
-Monocular depth estimators built on pre-trained diffusion
-models~\cite{marigold,lotus,marigoldv2} reach strong pixel-wise accuracy, but
-they inherit the smoothness of the generative prior at object boundaries. A
-depth map can have excellent AbsRel while every occlusion boundary in it is
-spread over several pixels. Pixel-averaged metrics do not see this: the
-boundary pixels are a small fraction of the image, so a metric dominated by
-flat surfaces reports no problem. Boundary-specific metrics do~\cite{depthpro}.
+Recent work repurposes the prior knowledge of large image generation models for
+monocular depth estimation. Marigold~\cite{marigold} fine-tunes the image diffusion
+model Stable Diffusion on synthetic RGB-D data and obtains a depth estimator that
+generalises well from a small amount of training data. Lotus~\cite{lotus} develops
+this further, replacing the multi-step diffusion process with a single-step
+prediction and accelerating inference substantially while keeping its accuracy.
+Marigold V2~\cite{marigoldv2} raises accuracy further by building on a diffusion
+transformer for image editing.
 
-Fixing boundaries after the fact is attractive because it leaves the depth
-model untouched. Prior work learns \emph{how} to move the
-depth~\cite{ramamonjisoa,sharpnet,edgeguided}. We take the opposite
-decomposition: fix the repair, and learn \emph{where} it should act.
+These methods, however, blur the depth discontinuity at object boundaries. This is
+thought to stem from the smoothness prior of the generative model and from
+predicting in a latent space of reduced resolution, and it spreads the step at an
+occlusion boundary over several pixels. Pixel-averaged metrics such as AbsRel
+hardly register the degradation, since boundary pixels are a small fraction of the
+image; it becomes apparent under boundary-specific metrics~\cite{depthpro}.
 
-The reason is empirical. Section~\ref{sec:why} measures a
-barrier-sharpening operation applied at every contour a segmentation
-model~\cite{sam} draws, and finds it \emph{costs} 1.90\% of boundary \bfone{}
-on Marigold V2~\cite{marigoldv2}. The same measurement shows why: contour
-localisation is already good enough, while 79.8\% of contours mark no depth
-step at all, and sharpening there only flattens smooth surface. Selecting the correct
-contours with ground truth, with no change to their positions, moves the effect
-from $-1.90\%$ to $+43.39\%$. Selection, not localisation, is the binding
-constraint.
+Improving boundaries by post-processing is attractive because it leaves the depth
+model untouched and applies to the output of any model. Prior work has learned how
+to correct the depth, through a displacement field that re-samples pixels around
+occlusion boundaries~\cite{ramamonjisoa} or through boundary-preserving disparity
+synthesis~\cite{edgeguided}.
 
-Our contributions:
+A simpler remedy draws on image segmentation. A segmentation model such as Segment
+Anything~\cite{sam} partitions an image into objects and regions and extracts their
+contours with high accuracy, and the contour of an object often coincides with a
+depth discontinuity. The predicted depth can then be refilled from both sides of a
+contour, turning a blurred step into a sharp one; we call this sharpening. Applied
+at every contour on Marigold V2, however, it lowers boundary \bfone{} by 1.9\%.
+Most segmentation contours (79.8\%), such as wallpaper patterns and floor seams,
+are contours that carry no depth step, and sharpening there introduces a
+discontinuity the scene does not have.
+
+This suggests that whether sharpening helps is decided less by where the contours
+lie than by which of them it is applied to. Indeed, selecting with ground truth
+only the contours that lie on true depth steps turns the effect into a gain without
+moving any contour. We therefore keep the sharpening operation fixed and learn only
+which contours to apply it to. The selector is a small U-Net that takes the RGB
+image, the predicted depth and the contours as input, while the depth model and the
+segmentation model stay frozen. Since the selector is the only trained component,
+the improvement is attributable to learning the selection. On NYUv2 the method
+improves boundary \bfone{} by 11.9\%, and the same selector, applied to Lotus
+without retraining, improves it by 27.8\%.
+
+Our contributions are threefold:
 
 \begin{enumerate}
-\item An identification of why post-hoc boundary sharpening fails: not the
-      localisation of the contours but the selection among them
-      (Sec.~\ref{sec:gtsel}).
-\item A method that fixes the repair and learns only its target, so that what
-      the learning contributes is attributable (Sec.~\ref{sec:selector}).
-\item Evidence that the result transfers across depth models without
-      retraining and does not transfer across datasets
-      (Sec.~\ref{sec:experiments}, Sec.~\ref{sec:limitations}).
+\item A post-processing method that fixes the sharpening operation and learns only
+      which contours to apply it to (Sec.~\ref{sec:method}).
+\item Evidence that it improves boundary accuracy beyond training-free controls and
+      classical edge-preserving filters (Sec.~\ref{sec:experiments}).
+\item Evidence that it transfers across depth models without retraining but not
+      across datasets (Sec.~\ref{sec:experiments}, Sec.~\ref{sec:limitations}).
 \end{enumerate}
 
 \begin{figure*}[t]
@@ -108,34 +121,23 @@ The restriction keeps the example one of sharpening a good prediction.}
 
 \section{Related Work}
 
-\textbf{Diffusion-based monocular depth.}
-Marigold~\cite{marigold} repurposes Stable Diffusion for affine-invariant
-monocular depth by fine-tuning on synthetic RGB-D. Marigold
-V2~\cite{marigoldv2} keeps that formulation and replaces the U-Net with a
-21.3-billion-parameter diffusion transformer adapted from an image-editing
-model, fine-tuned with 4-bit QLoRA and run in a single step.
-Lotus~\cite{lotus} removes
-the diffusion schedule, predicting in a single step with the timestep pinned.
-Subsequent work showed that one-step fine-tuning both simplifies and
-accelerates these models by orders of magnitude~\cite{onestep}. We evaluate on
-two of them that are as far apart as the family allows: Marigold
-V2~\cite{marigoldv2}, a diffusion transformer of 21.3B
-parameters emitting affine-invariant log depth, and Lotus~\cite{lotus}, an
-868M-parameter UNet emitting disparity.
+\textbf{Diffusion-based monocular depth.} Beyond the models above, one-step
+fine-tuning was shown to simplify these models and accelerate them by orders of
+magnitude~\cite{onestep}. We evaluate on two that are as far apart as the family
+allows: Marigold V2, a 21.3B-parameter diffusion transformer fine-tuned with 4-bit
+QLoRA that emits affine-invariant log depth, and Lotus, an 868M-parameter UNet that
+emits disparity.
 
-\textbf{Boundary sharpening as post-processing.}
-Ramamonjisoa et al.~\cite{ramamonjisoa} is the closest prior work: it learns a
-2D displacement field that re-samples pixels around occlusion boundaries, is
-applicable to any depth estimator's output, and uses NYUv2 with the same 795
-training and 654 test frames we use. SharpNet~\cite{sharpnet} instead builds
-occluding-contour recovery into the depth network's own training.
-Edge-guided post-processing~\cite{edgeguided} preserves boundaries during
-disparity synthesis in self-supervised pipelines. More recently, depth
-refinement through neural radiance fields~\cite{nerfrefine} fuses a monocular
-estimate with a reconstructed field to recover geometric detail. All of these
-learn how to move depth. None, to our knowledge, fixes the repair and learns
-only its target, and none uses a promptable segmentation model as the source of
-candidate boundaries.
+\textbf{Boundary sharpening as post-processing.} Ramamonjisoa
+et al.~\cite{ramamonjisoa} is the closest prior work: it applies to any depth
+estimator's output and uses NYUv2 with the same 795 training and 654 test frames.
+SharpNet~\cite{sharpnet} instead builds occluding-contour recovery into the depth
+network's training, and depth refinement through neural radiance
+fields~\cite{nerfrefine} fuses a monocular estimate with a reconstructed field. To
+our knowledge none fixes the repair and learns only its target, and none uses a
+promptable segmentation model as the source of candidate boundaries;
+Segment Anything~\cite{sam} has been used the other way round, to refine masks
+with depth as a prior.
 
 \textbf{We do not compare directly against~\cite{ramamonjisoa}.} No trained
 weights are released and the public implementation does not run under a current
@@ -148,10 +150,6 @@ which declares a depth step between neighbouring pixels when their depth
 \emph{ratio} exceeds a threshold, and sweeps that threshold over eleven values
 from 5\% to 25\%. We propose no new metric. Neither Lotus nor Marigold V2
 reports \bfone{} on NYUv2, so we measure the baselines ourselves.
-
-\textbf{Segmentation for depth.} Segment Anything~\cite{sam} has been used to
-refine masks with depth as a prior; we use it in the opposite direction, as a
-source of candidate depth boundaries that a learned selector then filters.
 
 \section{Method}
 \label{sec:method}
@@ -204,14 +202,11 @@ Both effects weaken the repair, and both are present in every number we report.
 \subsection{Applying it everywhere fails}
 \label{sec:why}
 
-Table~\ref{tab:diagnosis} applies the operation at every contour that Segment
-Anything draws on NYUv2, using Marigold V2 as the base. Boundary \bfone{} falls
-by 1.90\%. This diagnosis is specific to a model whose boundaries are already
-reasonable: on Lotus the same unselected sharpening \emph{gains} 10.31\%
-(Table~\ref{tab:controls}), because its boundaries start blunter (its
-baseline \bfone{} is 0.0693 against Marigold V2's 0.0884) so the room for improvement is larger and the
-cost of degradation smaller. Selection is what makes the operation safe on the first
-model, and it adds substantially on both.
+Applied at every contour that Segment Anything draws on NYUv2, the operation
+lowers Marigold V2's boundary \bfone{} by 1.90\% (Table~\ref{tab:diagnosis}).
+This is specific to a model whose boundaries are already reasonable: on Lotus,
+whose boundaries start blunter (baseline \bfone{} 0.0693 against 0.0884), the
+same unselected sharpening \emph{gains} 10.31\% (Table~\ref{tab:controls}).
 
 \begin{table}[t]
 \caption{Why post-hoc sharpening fails on Marigold V2, and what fixes it. \textnormal{NYUv2},
@@ -233,17 +228,15 @@ oracle selection, within 1\,px of a step & 6.07\% & $\mathbf{+43.39\%}$ \\
 
 Measuring from each true depth discontinuity to the nearest contour gives a
 median of 1.00\,px, with 66.9\% within 1\,px and 76.9\% within 2\,px. The
-contours are where the boundaries are. The failure is in the other direction:
-79.8\% of the contour pixels have no depth step anywhere within an eight-pixel
+contours are where the boundaries are, but 79.8\% of the contour pixels have no depth step anywhere within an eight-pixel
 window; these are wallpaper patterns, floor seams and poster edges. Sharpening there
 introduces a discontinuity into a region that has none.
 
 \subsection{Selecting with ground truth reverses the sign}
 \label{sec:gtsel}
 
-Two tolerances appear above and they are not complements of one another, so we
-state both. The 79.8\% uses an eight-pixel window, which is generous; the
-selection below uses one pixel, which is strict. Of the 22{,}167 segmentation
+The 79.8\% uses a generous eight-pixel window; the selection below uses a strict
+one-pixel tolerance. Of the 22{,}167 segmentation
 contour pixels in an average frame (10.6\% of its valid pixels) 1{,}345,
 or 6.07\%, lie within 1\,px of a true discontinuity. An oracle that keeps exactly
 those, and leaves every kept contour where it is, moves the effect from
