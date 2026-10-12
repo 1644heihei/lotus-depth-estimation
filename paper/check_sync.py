@@ -38,7 +38,11 @@ def numbers(path):
     # any table row that contains \%, which silently hid half the numbers.
     s = re.sub(r"(?<!\\)%.*", "", s)
     out = Counter()
-    for m in re.findall(r"\d+(?:\{,\})?\d*\.\d+|\d+\{,\}\d{3}", s):
+    # Decimals, grouped thousands, and whole-number percentages. The last of these was
+    # missing: the share of the gain a coarse segmentation grid delivers was corrected
+    # from 91% to 92% in the body and left at 91% in the abstract and the contribution
+    # list, in both languages, and nothing here noticed because 91 has no decimal point.
+    for m in re.findall(r"\d+(?:\{,\})?\d*\.\d+|\d+\{,\}\d{3}|\d+(?=\\%)", s):
         out[m.replace("{,}", ",")] += 1
     return out
 

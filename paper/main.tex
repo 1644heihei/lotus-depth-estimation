@@ -50,8 +50,7 @@ output representation, raise its boundary F1 by 27.83 percent with a standard
 deviation of 1.27. Five training-free controls, measured on each model's own
 predictions, place the learning's contribution at 10.7 and 17.4 points. The
 selector and the repair add 30 milliseconds per frame on top of the depth
-model's 495; the segmentation adds a further 534 to 2603 depending on its point
-grid, and the coarsest grid delivers 91 percent of the gain. We also report a
+model's 495, and the segmentation they depend on at least 534 more. We also report a
 negative result: the selector transfers across depth models but not across
 datasets, and the remedies we tried failed to fix it.
 \end{abstract}
@@ -99,7 +98,7 @@ Our contributions:
       controls measured on each model's own predictions
       (Sec.~\ref{sec:experiments}).
 \item A cost analysis showing the added work is 30\,ms per frame and that a
-      coarse segmentation grid gives 91\% of the gain at 20\% of the
+      coarse segmentation grid gives 92\% of the gain at 20\% of the
       segmentation cost (Sec.~\ref{sec:cost}).
 \end{enumerate}
 
