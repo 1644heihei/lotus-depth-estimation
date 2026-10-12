@@ -269,14 +269,9 @@ repair spends would drift from frame to frame. The budget is 6\% because that is
 the positive rate on the training frames, where 6.066\% of contour pixels lie
 within 1\,px of a true step.
 
-\textbf{Loss and training.} The selector emits a logit $s_p$ at every pixel and is
-trained with binary cross-entropy masked to the contour,
-\begin{equation}
-\mathcal{L} = -\frac{1}{|C|} \sum_{p \in C}
-\big[\, y_p \log \sigma(s_p) + (1 - y_p) \log (1 - \sigma(s_p)) \,\big],
-\end{equation}
-so the 89\% of the valid image that carries no contour is not a question the
-selector is asked. A contour pixel is positive if it lies within 1\,px of a depth
+\textbf{Loss and training.} The selector is trained with binary cross-entropy
+averaged over the contour pixels only, so the 89\% of the valid image that carries
+no contour is not a question the selector is asked. A contour pixel is positive if it lies within 1\,px of a depth
 discontinuity in ground truth, where a discontinuity is a depth ratio above
 10\%. We chose that threshold on a validation split rather than on the test
 set: scoring \bfone{} on the 141 frames of the 40 scenes held out of the 795
