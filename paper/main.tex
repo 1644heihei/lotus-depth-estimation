@@ -496,8 +496,7 @@ The edge-preserving filter row is the classical alternative: a guided or joint
 bilateral filter with the image as guide. Both lose on both models, monotonically
 in the radius, from $-4.75\%$ and $-7.15\%$ at the gentlest setting to
 $-50.14\%$ and $-45.30\%$. A filter can only smooth,
-and a smoothed boundary is what \bfone{} counts against; discarding the band and
-refilling each side from itself is what restores a step instead.
+and a smoothed boundary is what \bfone{} counts against.
 
 The hand-crafted control thresholds a local descriptor of the predicted depth's
 log-gradient. We select its feature by the final metric on the test split rather
@@ -595,18 +594,10 @@ The selector costs 12.0\,ms and the repair 18.3\,ms, so what this work adds is
 everything else, at 534\,ms to 2{,}603\,ms depending on its point grid.
 
 \textbf{A coarse grid gives a comparable gain.} Grid 16 reaches 92\% of grid 48's gain for
-20\% of the segmentation cost, making the whole pipeline 3.0$\times$ faster and
-cutting the time per point of \bfone{} improvement to about one in 2.7. The 0.90-point gap equals
+20\% of the segmentation cost. The 0.90-point gap equals
 the standard deviation across seeds, so a single pair of runs cannot settle the
 ordering; paired by seed, however, grid 48 is ahead in all four, by
-$0.90 \pm 0.29$ points (paired $t$-test, $p = 0.009$). The difference is consistent and small. Precision runs the other way across
-the grids (51.6\%, 50.6\%, 50.2\% at grids 16, 32, 48, one seed), which says
-what the coarse grid is doing: it traces large objects and misses wallpaper patterns and
-floor seams, so a larger share of the candidates it produces are true boundaries. Grid 48 finds
-3{,}200 more contour pixels per frame than grid 16 and yields 0.90 points of
-\bfone{} with them, so most of those are false positives. This is the same mechanism as the
-ablation above (the segmentation helps by shrinking the target set)
-appearing along a different axis.
+$0.90 \pm 0.29$ points (paired $t$-test, $p = 0.009$). The difference is consistent and small.
 
 \section{Conclusion}
 
