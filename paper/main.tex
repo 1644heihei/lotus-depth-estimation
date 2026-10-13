@@ -313,7 +313,7 @@ from the 654 test frames. Training takes 16 minutes and 3.5\,GB of VRAM on one
 RTX 4090.
 
 \textbf{Implementation.} The selector is trained with AdamW at a learning rate of
-$3 \times 10^{-4}$, weight decay $10^{-4}$ and a cosine schedule, for 30 epochs at
+$3 \times 10^{-4}$, weight decay $10^{-4}$ and a cosine schedule, for 40 epochs at
 batch size 4. Frames are used at their native $480 \times 640$ with no resizing and
 no augmentation: the band and the refill radius are defined in pixels, so rescaling
 would change what $r_b = 2$ means. Contours come from Segment Anything
@@ -394,8 +394,12 @@ Lotus, 868M, disparity & 0.0693 & $+10.31\%$ & $\mathbf{+27.83 \pm 1.27\%}$ \\
 \end{table}
 
 All four seeds clear $+10\%$ on Marigold V2, with a 95\% confidence interval
-whose lower bound is $+10.49\%$. Pixel-wise accuracy does not regress: AbsRel
-moves from 0.03881 to 0.03860 and $\delta_1$ from 0.97969 to 0.98000.
+whose lower bound is $+10.49\%$. Pixel-wise accuracy does not regress either. We
+measure it with AbsRel, the mean absolute error relative to the ground-truth
+depth (lower is better), and $\delta_1$, the share of pixels whose prediction is
+within a factor of 1.25 of ground truth (higher is better). AbsRel moves from
+0.03881 to 0.03860 and $\delta_1$ from 0.97969 to 0.98000, both slightly in the
+better direction.
 
 Per-frame scoring shows the mean is not carried by a few frames: 484 of 651
 frames improve (74.3\%), with a median relative gain of $+13.15\%$ and first
@@ -403,7 +407,7 @@ and third quartiles $-0.19\%$ and $+31.57\%$; a quarter of frames are therefore
 slightly worse. Three frames with a baseline \bfone{} of zero are excluded,
 as their relative gain is undefined.
 
-\subsection{A second boundary metric}
+\subsection{Evaluation with Soft Edge Error}
 
 An improvement visible in one metric may be an improvement in that metric's
 definition. We therefore also report Soft Edge Error \cite{smdnets}, the
