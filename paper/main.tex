@@ -306,9 +306,8 @@ thins the positives (from 6.07\% of contour pixels to 2.13\%) so the fixed budge
 is then spent mostly on negatives. Every hyperparameter of the method was set on
 the validation split; the one exception is a control, and
 Sec.~\ref{sec:controls} states it there. The 795 NYUv2 training frames are split
-by scene into 654 for training and 141 for validation; the deployed checkpoint is
-the best-validation epoch and has seen only those 654, which are a different set
-from the 654 test frames. Training takes 16 minutes and 3.5\,GB of VRAM on one
+by scene into 654 for training and 141 for validation, and the best-validation epoch
+is used. Training takes 16 minutes and 3.5\,GB of VRAM on one
 RTX 4090.
 
 \textbf{Implementation.} The selector is trained with AdamW at a learning rate of
@@ -328,10 +327,7 @@ would fill the frame. Timings are on one RTX 4090.
 
 Applied at every contour that Segment Anything draws on NYUv2, barrier
 sharpening lowers Marigold V2's boundary \bfone{} by 1.90\%
-(Table~\ref{tab:diagnosis}). This is specific to a model whose boundaries are
-already reasonable: on Lotus, whose boundaries start blunter (baseline \bfone{}
-0.0693 against 0.0884), the same unselected sharpening \emph{gains} 10.31\%
-(Table~\ref{tab:controls}).
+(Table~\ref{tab:diagnosis}).
 
 \begin{table}[t]
 \caption{Why post-hoc sharpening fails on Marigold V2, and what fixes it. \textnormal{NYUv2},
@@ -565,9 +561,7 @@ share of contour pixels on a real step is 6.07\% on NYUv2 and 22.8\% on
 Hypersim.
 
 \textbf{Cost.}\label{sec:cost} Table~\ref{tab:cost} gives wall-clock time per frame on one RTX 4090, measured
-after warm-up on real frames. Marigold V2's transformer is loaded in 4-bit NF4,
-the released configuration's default, so its 21.3 billion parameters occupy
-roughly 10.6\,GB and the model fits a 24\,GB card; at bf16 it would not.
+after warm-up on real frames.
 
 \begin{table}[t]
 \caption{Per-frame running time and the improvement obtained. Grids 16 and 48 are means over the
