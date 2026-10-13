@@ -111,9 +111,7 @@ nothing outside the bands around the selected contours changes. Middle: a 48\,px
 chair-back boundary, with a depth profile across it. The baseline misses both
 steps ground truth has; the sharpened map reproduces them. The three maps in the crop share a colour scale taken from it. Bottom: the depth discontinuities each map contains,
 which is what \bfone{} compares; green is in both, red is in the prediction
-only, grey is in ground truth only. The frame is ranked 140th of the 326 whose
-AbsRel is at or below the split median of 0.0303, by absolute \bfone{} gain;
-its relative gain of $+9.01\%$ is below the split median of $+13.15\%$.}
+only, grey is in ground truth only.}
 \label{fig:qualitative}
 \end{figure*}
 
@@ -444,11 +442,6 @@ GT contours     & $+279.0\%$  & $-12.96\%$ & $-9.81\%$ & $-8.73\%$ \\
 The two metrics agree on every variant of both models: the selector improves
 both, the relocated control worsens both, and sharpening at GT contours is best
 on both. The improvement is therefore not an artefact of \bfone{}'s definition.
-
-Their magnitudes are not comparable and should not be read as such. SEE is an
-absolute error averaged over boundary pixels, floored by how accurate the
-model's depth values are there, so sharpening at GT contours raises \bfone{} by
-$209.8\%$ while lowering SEE$_5$ by $5.09\%$.
 
 \subsection{Analysis}
 
