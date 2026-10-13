@@ -70,8 +70,8 @@ image; it becomes apparent under boundary-specific metrics~\cite{depthpro}.
 Improving boundaries by post-processing is attractive because it leaves the depth
 model untouched and applies to the output of any model. Prior work has learned how
 to correct the depth, through a displacement field that re-samples pixels around
-occlusion boundaries~\cite{ramamonjisoa} or through boundary-preserving disparity
-synthesis~\cite{edgeguided}.
+occlusion boundaries~\cite{ramamonjisoa} or through edge-guided
+post-processing~\cite{edgeguided}.
 
 A simpler remedy draws on image segmentation. A segmentation model such as Segment
 Anything~\cite{sam} partitions an image into objects and regions and extracts their
@@ -114,42 +114,61 @@ steps ground truth has; the sharpened map reproduces them. The three maps in the
 which is what \bfone{} compares; green is in both, red is in the prediction
 only, grey is in ground truth only. The frame is ranked 140th of the 326 whose
 AbsRel is at or below the split median of 0.0303, by absolute \bfone{} gain;
-its relative gain of $+9.01\%$ is below the split median of $+13.15\%$.
-The restriction keeps the example one of sharpening a good prediction.}
+its relative gain of $+9.01\%$ is below the split median of $+13.15\%$.}
 \label{fig:qualitative}
 \end{figure*}
 
 \section{Related Work}
 
-\textbf{Diffusion-based monocular depth.} Beyond the models above, one-step
-fine-tuning was shown to simplify these models and accelerate them by orders of
-magnitude~\cite{onestep}. We evaluate on two that are as far apart as the family
-allows: Marigold V2, a 21.3B-parameter diffusion transformer fine-tuned with 4-bit
-QLoRA that emits affine-invariant log depth, and Lotus, an 868M-parameter UNet that
-emits disparity.
+\subsection{Diffusion-based monocular depth estimation}
 
-\textbf{Boundary sharpening as post-processing.} Ramamonjisoa
-et al.~\cite{ramamonjisoa} is the closest prior work: it applies to any depth
-estimator's output and uses NYUv2 with the same 795 training and 654 test frames.
-SharpNet~\cite{sharpnet} instead builds occluding-contour recovery into the depth
-network's training, and depth refinement through neural radiance
-fields~\cite{nerfrefine} fuses a monocular estimate with a reconstructed field. To
-our knowledge none fixes the repair and learns only its target, and none uses a
-promptable segmentation model as the source of candidate boundaries;
-Segment Anything~\cite{sam} has been used the other way round, to refine masks
-with depth as a prior.
+Marigold~\cite{marigold} fine-tunes the image diffusion model Stable Diffusion on
+synthetic RGB-D data to estimate affine-invariant depth. Lotus~\cite{lotus}
+predicts the depth itself rather than noise and replaces the multi-step process
+with a single step at a fixed timestep, improving both accuracy and speed. Garcia
+et al.~\cite{onestep} showed that correcting Marigold's inference procedure and
+combining single-step inference with end-to-end fine-tuning makes it orders of
+magnitude faster without loss of accuracy. Marigold V2~\cite{marigoldv2} builds
+on a diffusion transformer for image editing and estimates affine-invariant log
+depth in a single step. All of these improve the depth model itself; this work
+leaves the model untouched and post-processes its output.
 
-\textbf{We do not compare directly against~\cite{ramamonjisoa}.} No trained
-weights are released and the public implementation does not run under a current
-environment, so a direct comparison is out of reach here. Reimplementing it on
-the same split is left as future work.
+\subsection{Improving depth boundaries}
 
-\textbf{Boundary metrics.}
-We adopt the scale-invariant boundary \bfone{} of Depth Pro~\cite{depthpro},
-which declares a depth step between neighbouring pixels when their depth
-\emph{ratio} exceeds a threshold, and sweeps that threshold over eleven values
-from 5\% to 25\%. We propose no new metric. Neither Lotus nor Marigold V2
-reports \bfone{} on NYUv2, so we measure the baselines ourselves.
+Ramamonjisoa et al.~\cite{ramamonjisoa} learn a 2D displacement field that
+re-samples pixels around occlusion boundaries, improving the output of any depth
+estimator by post-processing. It uses NYUv2 with the same 795 training and 654
+test frames and is the closest prior work. SharpNet~\cite{sharpnet} builds
+occluding-contour estimation into the training of the depth network, and Peng
+et al.~\cite{edgeguided} reduce the degradation near occlusion boundaries in
+self-supervised monocular depth with an edge-guided post-processing step.
+Muthukkumar~\cite{nerfrefine} fuses a monocular estimate with depth from a neural
+radiance field to recover detail. All of these design or learn how to correct the
+depth; this work fixes the correction and learns only where to apply it. Since no
+trained weights are released for~\cite{ramamonjisoa}, we do not compare against
+it directly.
+
+\subsection{Segmentation and depth estimation}
+
+Segment Anything~\cite{sam} is a segmentation model that extracts arbitrary
+regions of an image without being told the object class. Its contours capture
+object boundaries well, but many of them, such as wallpaper patterns and floor
+seams, carry no depth discontinuity. This work uses these contours as candidates
+for depth boundaries and learns to select those that carry a depth step. To our
+knowledge, no prior work uses the contours of a segmentation model as candidates
+for depth boundaries.
+
+\subsection{Boundary metrics}
+
+Pixel-averaged metrics such as AbsRel and $\delta_1$ hardly reflect blurred
+boundaries, since boundary pixels are a small fraction of the image. Depth
+Pro~\cite{depthpro} proposed a scale-invariant boundary metric, \bfone{}, that
+declares a depth step where the ratio of neighbouring depths exceeds a threshold,
+sweeps that threshold from 5\% to 25\%, and scores the agreement with F1.
+SMD-Nets~\cite{smdnets} proposed the Soft Edge Error (SEE) for evaluating stereo,
+measuring the error at ground-truth boundary pixels while tolerating small
+displacements, and Marigold V2~\cite{marigoldv2} also uses it. We use both and
+propose no new metric.
 
 \section{Method}
 \label{sec:method}
@@ -241,8 +260,7 @@ contour pixels in an average frame (10.6\% of its valid pixels) 1{,}345,
 or 6.07\%, lie within 1\,px of a true discontinuity. An oracle that keeps exactly
 those, and leaves every kept contour where it is, moves the effect from
 $-1.90\%$ to $+43.39\%$
-(Table~\ref{tab:diagnosis}). The contours are not moved in this experiment; only the set they are drawn from
-differs. The loss is therefore attributable to which contours are sharpened rather
+(Table~\ref{tab:diagnosis}). The loss is therefore attributable to which contours are sharpened rather
 than to where they lie, and Sec.~\ref{sec:selector} learns that selection.
 
 \subsection{The selector}
@@ -251,9 +269,7 @@ than to where they lie, and Sec.~\ref{sec:selector} learns that selection.
 \textbf{Inputs and output.} The selector is a four-level U-Net with 1.9M
 parameters. It takes the RGB image (3 channels), the predicted depth (1), and
 the contour mask (1), and emits one logit per pixel. The prediction is
-standardised per image. Without that step no error is raised when the level and
-scale differ between training and inference; only the final metric degrades, and
-it does so quietly. For a model that emits disparity $v$ rather than log depth
+standardised per image. For a model that emits disparity $v$ rather than log depth
 we apply $-\log\max(v, 10^{-3})$ first: disparity rises as depth falls, so
 feeding it raw would invert the signal, and an affine-invariant disparity can be
 non-positive, which the clamp handles. This is monotone in depth but not an
@@ -305,6 +321,12 @@ prediction. Predictions are aligned to ground truth in their own space before
 scoring (log depth for Marigold V2, disparity for Lotus) and the alignment
 affects every variant equally.
 
+\textbf{Depth models.} We evaluate two models that are as far apart as the family
+allows: Marigold V2, a 21.3B-parameter diffusion transformer fine-tuned with
+4-bit QLoRA that emits affine-invariant log depth, and Lotus, an 868M-parameter
+UNet that emits disparity. Neither reports \bfone{} on NYUv2, so we measure the
+baselines ourselves.
+
 \textbf{Choice of benchmarks.} \bfone{} compares neighbouring
 pixels, so it needs ground truth dense enough for both to be valid, and three of
 the five benchmarks these models are evaluated on do not provide it: KITTI
@@ -354,15 +376,13 @@ Lotus, 868M, disparity & 0.0693 & $+10.31\%$ & $\mathbf{+27.83 \pm 1.27\%}$ \\
 
 All four seeds clear $+10\%$ on Marigold V2, with a 95\% confidence interval
 whose lower bound is $+10.49\%$. Pixel-wise accuracy does not regress: AbsRel
-moves from 0.03881 to 0.03860 and $\delta_1$ from 0.97969 to 0.98000. Both
-changes are small, and we claim only that accuracy is not traded for boundaries.
+moves from 0.03881 to 0.03860 and $\delta_1$ from 0.97969 to 0.98000.
 
 Per-frame scoring shows the mean is not carried by a few frames: 484 of 651
 frames improve (74.3\%), with a median relative gain of $+13.15\%$ and first
 and third quartiles $-0.19\%$ and $+31.57\%$; a quarter of frames are therefore
-slightly worse. The three frames excluded here have a baseline
-\bfone{} of zero at all eleven thresholds, so a relative gain is undefined for
-them; they are included in the pooled figure, where they contribute zero.
+slightly worse. Three frames with a baseline \bfone{} of zero are excluded,
+as their relative gain is undefined.
 
 \subsection{A second boundary metric}
 
@@ -410,9 +430,7 @@ on both. The improvement is therefore not an artefact of \bfone{}'s definition.
 Their magnitudes are not comparable and should not be read as such. SEE is an
 absolute error averaged over boundary pixels, floored by how accurate the
 model's depth values are there, so sharpening at GT contours raises \bfone{} by
-$209.8\%$ while lowering SEE$_5$ by $5.09\%$. The improvement also shrinks as
-$k$ grows (from $-11.44\%$ to $-2.91\%$ at GT contours) which is what a
-metric that forgives more displacement at larger $k$ should do.
+$209.8\%$ while lowering SEE$_5$ by $5.09\%$.
 
 \subsection{Controls}
 \label{sec:controls}
@@ -460,9 +478,7 @@ than by ranking quality on held-out data: over four candidates the AUC ordering
 and the \bfone{} ordering are \emph{inverted}, and the feature with the worst
 AUC (0.801) gives the best \bfone{} ($+1.25\%$) while the best AUC (0.876) gives
 the worst ($-2.59\%$). That gives the control an advantage the method does not
-have, which makes the comparison conservative; a control chosen by a proxy
-metric would have been too weak, and a weak control only flatters the method it
-is compared against.
+have, which makes the comparison conservative.
 
 Both random rows spend exactly the budget the selector spends, taken from its
 output frame by frame. Random-pixel selection is close on the two models
@@ -525,10 +541,7 @@ seeds), against the 9.1 points that separate in-domain from ScanNet.
 precise on Hypersim than in its own domain (55.8\% against 50.2\%) yet scores
 worst there, and precision is not comparable across datasets in any case: the
 share of contour pixels on a real step is 6.07\% on NYUv2 and 22.8\% on
-Hypersim. What separates the rows appears to be whether the evaluation data
-matches the training domain, which we cannot reduce to a measured quantity.
-
-Post-processing that is model-agnostic is not thereby dataset-agnostic.
+Hypersim.
 
 \subsection{Cost}
 \label{sec:cost}
