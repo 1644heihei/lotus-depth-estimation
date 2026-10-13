@@ -34,19 +34,18 @@ TODO email}}
 
 \begin{abstract}
 Diffusion-based monocular depth estimators are accurate on smooth surfaces but blur
-the depth discontinuities at object boundaries. Sharpening the predicted depth at
-the contours found by a segmentation model is a natural remedy, yet applying it at
-every contour lowers boundary F1 by 1.9 percent. Observing that this loss arises
-from sharpening contours that carry no depth step, we propose to keep the
-sharpening operation fixed and to learn only which contours it should be applied
-to. On NYUv2 the method improves boundary F1 by 11.9 percent averaged over four
-seeds, and the same selector, applied without retraining to a depth model of a
-different architecture and output representation, improves it by 27.8 percent. We
-also report that the selector does not transfer across datasets.
+the depth discontinuities at object boundaries. A natural remedy is to sharpen the
+predicted depth at the contours found by a segmentation model, yet applying it at
+every contour lowers boundary F1. Observing that this loss arises from sharpening
+contours that carry no depth step, we propose to keep the sharpening operation
+fixed and to learn only which contours it should be applied to. In experiments,
+the method improves boundary F1 on NYUv2 by 11.9 percent, and the same selector,
+applied without retraining to a depth model of a different architecture and output
+representation, improves it by 27.8 percent.
 \end{abstract}
 
 \begin{IEEEkeywords}
-monocular depth estimation, depth boundaries, post-processing, diffusion models
+monocular depth estimation, depth boundaries, segmentation, diffusion models
 \end{IEEEkeywords}
 
 \section{Introduction}
