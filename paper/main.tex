@@ -455,10 +455,15 @@ absolute error averaged over boundary pixels, floored by how accurate the
 model's depth values are there, so sharpening at GT contours raises \bfone{} by
 $209.8\%$ while lowering SEE$_5$ by $5.09\%$.
 
-\subsection{Controls}
-\label{sec:controls}
+\subsection{Analysis}
 
-The gain could come from the sharpening rather than from the learning, or from
+This subsection analyses where the improvement comes from and how far it
+holds. We first compare against training-free controls to confirm that the gain
+comes from the learned selection. We then measure the contribution of the
+segmentation model and test how the selector generalises to other datasets.
+Finally, we report the cost.
+
+\textbf{Controls.}\label{sec:controls} The gain could come from the sharpening rather than from the learning, or from
 simply being sparse. Table~\ref{tab:controls} measures six training-free
 alternatives, each on the base model's own predictions.
 
@@ -511,9 +516,7 @@ contour contiguous, costs almost nothing on either and nothing at all on Lotus:
 scattering the selection is most of what makes the pixel control so destructive,
 and choosing badly on its own incurs almost no cost.
 
-\subsection{How much the segmentation contributes}
-
-Removing the segmentation model entirely, so that the selector must find
+\textbf{Contribution of the segmentation model.} Removing the segmentation model entirely, so that the selector must find
 boundaries itself from RGB and depth and every valid pixel is a candidate, gives
 $+7.30\%$. Both halves of this ablation come from a single seed, so the figure
 to compare against is that seed's $+12.49\%$: the segmentation is worth 5.19
@@ -523,10 +526,7 @@ budget of 1{,}330 can cover 98.9\% of them; counting over the whole valid image
 there are 2{,}941, and the same budget caps recall at 45.2\%. The segmentation
 earns its contribution by \emph{shrinking the target set}.
 
-\subsection{Cross-dataset generalisation}
-\label{sec:transfer}
-
-The selector transfers across depth models but not across datasets.
+\textbf{Cross-dataset generalisation.}\label{sec:transfer} The selector transfers across depth models but not across datasets.
 Table~\ref{tab:generalisation} applies the NYUv2-trained selector to ScanNet and
 Hypersim, using Marigold V2 throughout.
 
@@ -566,10 +566,7 @@ worst there, and precision is not comparable across datasets in any case: the
 share of contour pixels on a real step is 6.07\% on NYUv2 and 22.8\% on
 Hypersim.
 
-\subsection{Cost}
-\label{sec:cost}
-
-Table~\ref{tab:cost} gives wall-clock time per frame on one RTX 4090, measured
+\textbf{Cost.}\label{sec:cost} Table~\ref{tab:cost} gives wall-clock time per frame on one RTX 4090, measured
 after warm-up on real frames. Marigold V2's transformer is loaded in 4-bit NF4,
 the released configuration's default, so its 21.3 billion parameters occupy
 roughly 10.6\,GB and the model fits a 24\,GB card; at bf16 it would not.
