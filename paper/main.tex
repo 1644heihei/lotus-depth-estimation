@@ -611,17 +611,28 @@ appearing along a different axis.
 
 \section{Conclusion}
 
-On a depth model whose boundaries are already reasonable, post-hoc sharpening
-fails because most segmentation contours mark no depth step. Fixing the repair
-and learning only its target makes the gain attributable and transfers across
-depth models without retraining, but not across datasets.
+This paper proposed a post-processing method that improves the object boundaries
+blurred by diffusion-based monocular depth estimators without modifying the
+depth model. It fixes barrier sharpening, which restores depth steps at the
+contours of a segmentation model, and uses a small U-Net to select only the
+contours it is applied to.
+
+The experiments yield three findings. First, sharpening at every contour lowers
+boundary accuracy, and the cause is not where the contours lie but that contours
+carrying no depth step are sharpened too. Second, learning which contours to
+sharpen improves the boundary \bfone{} of Marigold V2 on NYUv2 by 11.9\%, and the
+same selector applied to Lotus without retraining improves it by 27.8\%;
+training-free controls and classical filters do not achieve this, and Soft Edge
+Error confirms it. Third, the selector transfers across depth models but not
+across datasets.
 
 \textbf{Limitations.} The oracle selection of Sec.~\ref{sec:gtsel} reaches
-$+43.39\%$ against our $+11.92\%$; the gap is precision, 50.2\% against 100\%.
-AbsRel and $\delta_1$ move too little to claim, and we claim only that they do
-not regress. Supervision and \bfone{} both refer to ground-truth depth steps;
-ground truth never enters inference, but the shared definition may bear on how
-the result is read. Making the selection independent of the training domain is the main open problem.
+$+43.39\%$ against our $+11.92\%$; the gap lies in the precision of the
+selection, 50.2\% against 100\%. For AbsRel and $\delta_1$ we claim only that
+they do not regress. Supervision and \bfone{} both refer to ground-truth depth
+steps; ground truth never enters inference, but the shared definition may bear on
+how the result is read. Making the selection independent of the training domain
+is the main open problem.
 
 \section*{Acknowledgment}
 
