@@ -59,17 +59,18 @@ prediction and accelerating inference substantially while keeping its accuracy.
 Marigold V2~\cite{marigoldv2} raises accuracy further by building on a diffusion
 transformer for image editing.
 
-These methods, however, blur the depth discontinuity at object boundaries. This is
-thought to stem from the smoothness prior of the generative model and from
-predicting in a latent space of reduced resolution, and it spreads the step at an
-occlusion boundary over several pixels. Pixel-averaged metrics such as AbsRel
-hardly register the degradation, since boundary pixels are a small fraction of the
-image; it becomes apparent under boundary-specific metrics~\cite{depthpro}.
+These methods, however, blur the depth discontinuities at object boundaries. This
+is thought to stem from the smoothness prior of the generative model and from
+predicting in a latent space of reduced resolution, and the step at an occlusion
+boundary can spread over several pixels. Metrics computed over the whole image
+hardly register this degradation, since boundary pixels are a small fraction of
+the image, but boundary-specific metrics reveal it~\cite{depthpro}.
 
-Improving boundaries by post-processing is attractive because it leaves the depth
-model untouched and applies to the output of any model. Prior work has learned how
-to correct the depth, through a displacement field that re-samples pixels around
-occlusion boundaries~\cite{ramamonjisoa} or through edge-guided
+To address blurred depth discontinuities, methods that improve boundaries by
+post-processing have been proposed. They leave the depth model untouched and
+apply to the output of any model. Prior work has learned how to correct the
+depth, through a displacement field that re-samples pixels around occlusion
+boundaries~\cite{ramamonjisoa} or through edge-guided
 post-processing~\cite{edgeguided}.
 
 A simpler remedy draws on image segmentation. A segmentation model such as Segment
@@ -77,21 +78,20 @@ Anything~\cite{sam} partitions an image into objects and regions and extracts th
 contours with high accuracy, and the contour of an object often coincides with a
 depth discontinuity. The predicted depth can then be refilled from both sides of a
 contour, turning a blurred step into a sharp one; we call this sharpening. Applied
-at every contour on Marigold V2, however, it lowers boundary \bfone{} by 1.9\%.
-Most segmentation contours (79.8\%), such as wallpaper patterns and floor seams,
-are contours that carry no depth step, and sharpening there introduces a
-discontinuity the scene does not have.
+at every contour on Marigold V2, however, it lowers boundary \bfone{}. Most
+segmentation contours, such as wallpaper patterns and floor seams, carry no depth
+step, and sharpening there introduces a discontinuity the scene does not have.
 
 This suggests that whether sharpening helps is decided less by where the contours
 lie than by which of them it is applied to. Indeed, selecting with ground truth
 only the contours that lie on true depth steps turns the effect into a gain without
-moving any contour. We therefore keep the sharpening operation fixed and learn only
-which contours to apply it to. The selector is a small U-Net that takes the RGB
-image, the predicted depth and the contours as input, while the depth model and the
-segmentation model stay frozen. Since the selector is the only trained component,
-the improvement is attributable to learning the selection. On NYUv2 the method
-improves boundary \bfone{} by 11.9\%, and the same selector, applied to Lotus
-without retraining, improves it by 27.8\%.
+moving any contour.
+
+We therefore keep the sharpening operation fixed and learn only which contours to
+apply it to. The selector is a small U-Net that takes the RGB image, the predicted
+depth and the contours as input, while the depth model and the segmentation model
+are left unchanged. Since the selector is the only trained component, the
+improvement is attributable to learning the selection.
 
 Our contributions are threefold:
 
