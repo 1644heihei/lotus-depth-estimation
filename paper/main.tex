@@ -175,26 +175,43 @@ propose no new metric.
 
 \begin{figure}[t]
 \centerline{\includegraphics[width=\columnwidth]{figures/pipeline.png}}
-\caption{Only the selector is trained. The depth model and the segmentation
-model are frozen, and the repair is a fixed operation with no parameters, so
-the gain is attributable to the selection alone.}
+\caption{Pipeline of the method. From the input RGB image, the frozen depth
+model predicts depth and the frozen segmentation model extracts candidate
+contours. The selector maps the image, the depth and the contours to a
+probability for each contour pixel and keeps only a fixed fraction of the most
+probable. Sharpening is applied at the kept contours alone, leaving every other
+pixel unchanged. Only the selector is trained.}
 \label{fig:pipeline}
 \end{figure}
 
-Fig.~\ref{fig:pipeline} shows the pipeline. The depth model and the
-segmentation model are frozen. The repair is the fixed operation of
-Sec.~\ref{sec:repair}, which learns nothing. The only trained component is the
-selector; Sec.~\ref{sec:why} motivates this design.
+\subsection{Overview}
 
-\subsection{The repair operation}
+Fig.~\ref{fig:pipeline} gives an overview of the method. The input is a single
+RGB image. The depth model predicts affine-invariant depth, and the segmentation
+model extracts candidate contours from region borders. The selector takes the
+image, the predicted depth and the contours, outputs a probability for each
+contour pixel, and keeps a fixed fraction of the most probable. Finally, the
+barrier sharpening of Sec.~\ref{sec:repair} is applied at the kept contours. Only
+the selector is trained: the depth model and the segmentation model are frozen,
+and barrier sharpening has no learned parameters. Contours are selected because
+many of them, such as wallpaper patterns and floor seams, carry no depth step,
+and sharpening there creates a discontinuity the scene does not have
+(Sec.~\ref{sec:why}).
+
+\subsection{Barrier sharpening}
 \label{sec:repair}
 
-We call the operation \emph{barrier sharpening}: it treats each selected contour
-as a barrier across which depth may not be interpolated. Let $z$ be a predicted
-depth map, $V$ its valid pixels and $C \subseteq V$ a set of contour pixels. The
-operation discards the band
+Diffusion-based depth estimators mix foreground and background depth at object
+boundaries, turning a step that should change within one pixel into a slope over
+several. If the boundary is known, the step can be restored by discarding the
+mixed pixels around it and refilling each side from its own depth alone. We take
+the boundary from the contours of a segmentation model and, because each contour
+acts as a barrier to interpolation, call this operation \emph{barrier sharpening}.
+
+Let $z$ be a predicted depth map, $V$ its valid pixels and $C \subseteq V$ a set
+of contour pixels. The operation discards the band
 \begin{equation}
-B = \{\, p \in V \mid \mathrm{dist}(p, C) \le r_b \,\}, \qquad r_b = 2,
+B = \{\, p \in V \mid \mathrm{dist}(p, C) \le r_b \,\},
 \end{equation}
 labels the connected components of $V \setminus B$, so that the two sides of a
 contour receive different labels, and floods those labels inward one pixel at a
@@ -203,106 +220,49 @@ discarded pixel is then refilled from its own side only,
 \begin{equation}
 \hat z(p) = \frac{1}{|N(p)|} \sum_{q \in N(p)} z(q),
 \end{equation}
-where $N(p) = \{\, q \notin B \mid \|q - p\| \le r_f,\ \ell(q) = \ell(p) \,\}$
-and $r_f = 3$. Pixels outside $B$ are unchanged. The band is discarded because a diffusion model
-interpolates across the boundary; refilling from one side only removes that
-mixing. The component labels come from the contours themselves, not from the
-segmentation masks. The operation has two settings and learns nothing.
-We require $r_f > r_b$, or $N(p)$ is empty and the
-operation leaves the map unchanged.
+where $N(p) = \{\, q \notin B \mid \|q - p\| \le r_f,\ \ell(q) = \ell(p) \,\}$.
+Pixels outside $B$ are unchanged. The component labels come from the contours
+themselves, not from the segmentation masks. The operation has only two
+settings, the band width $r_b$ and the refill radius $r_f$, and learns nothing.
+We require $r_f > r_b$, or $N(p)$ is empty and the operation leaves the map
+unchanged.
 
 The separation of the two sides holds only where a contour closes or reaches the
 image border. Where it ends inside the image the valid region stays connected
 around that end, so both sides of the band belong to one component there and
-one-sided interpolation does not hold. Selection makes this more common:
-keeping 6\% of the contour pixels leaves fragments rather than whole outlines.
-Both effects weaken the repair, and both are present in every number we report.
-
-\subsection{Applying it everywhere fails}
-\label{sec:why}
-
-Applied at every contour that Segment Anything draws on NYUv2, the operation
-lowers Marigold V2's boundary \bfone{} by 1.90\% (Table~\ref{tab:diagnosis}).
-This is specific to a model whose boundaries are already reasonable: on Lotus,
-whose boundaries start blunter (baseline \bfone{} 0.0693 against 0.0884), the
-same unselected sharpening \emph{gains} 10.31\% (Table~\ref{tab:controls}).
-
-\begin{table}[t]
-\caption{Why post-hoc sharpening fails on Marigold V2, and what fixes it. \textnormal{NYUv2},
-654 frames. Oracle selection uses ground truth to choose a subset of the
-segmentation contours and moves none of them.}
-\label{tab:diagnosis}
-\centering
-\begin{tabular}{lrr}
-\toprule
-Contours sharpened & share kept & \bfone{} change \\
-\midrule
-all segmentation contours & 100\% & $-1.90\%$ \\
-oracle selection, within 1\,px of a step & 6.07\% & $\mathbf{+43.39\%}$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{Localisation is not the problem}
-
-Measuring from each true depth discontinuity to the nearest contour gives a
-median of 1.00\,px, with 66.9\% within 1\,px and 76.9\% within 2\,px. The
-contours are where the boundaries are, but 79.8\% of the contour pixels have no depth step anywhere within an eight-pixel
-window; these are wallpaper patterns, floor seams and poster edges. Sharpening there
-introduces a discontinuity into a region that has none.
-
-\subsection{Selecting with ground truth reverses the sign}
-\label{sec:gtsel}
-
-The 79.8\% uses a generous eight-pixel window; the selection below uses a strict
-one-pixel tolerance. Of the 22{,}167 segmentation
-contour pixels in an average frame (10.6\% of its valid pixels) 1{,}345,
-or 6.07\%, lie within 1\,px of a true discontinuity. An oracle that keeps exactly
-those, and leaves every kept contour where it is, moves the effect from
-$-1.90\%$ to $+43.39\%$
-(Table~\ref{tab:diagnosis}). The loss is therefore attributable to which contours are sharpened rather
-than to where they lie, and Sec.~\ref{sec:selector} learns that selection.
+one-sided interpolation does not hold. Selection makes this more common, since
+keeping only part of the contour pixels leaves fragments rather than whole
+outlines. Both effects weaken the repair, and both are present in every number
+we report.
 
 \subsection{The selector}
 \label{sec:selector}
 
-\textbf{Inputs and output.} The selector is a four-level U-Net with 1.9M
-parameters. It takes the RGB image (3 channels), the predicted depth (1), and
-the contour mask (1), and emits one logit per pixel. The prediction is
-standardised per image. For a model that emits disparity $v$ rather than log depth
-we apply $-\log\max(v, 10^{-3})$ first: disparity rises as depth falls, so
-feeding it raw would invert the signal, and an affine-invariant disparity can be
-non-positive, which the clamp handles. This is monotone in depth but not an
-affine map of log depth: the unknown shift in $v$ survives the logarithm as a
-nonlinearity that per-image standardisation cannot remove. We apply the
-selector unchanged regardless, and the Lotus column of Table~\ref{tab:main} is
-what that approximation is worth.
+\textbf{Inputs and output.} The selector is a U-Net that takes the RGB image
+(3 channels), the predicted depth (1) and the contour mask (1), and emits one
+logit per pixel. The prediction is standardised per image. For a model that
+emits disparity $v$ rather than log depth we apply $-\log\max(v, 10^{-3})$
+first: disparity rises as depth falls, so feeding it raw would invert the
+signal, and an affine-invariant disparity can be non-positive, which the clamp
+handles. This is monotone in depth but not an affine map of log depth: the
+unknown shift in $v$ survives the logarithm as a nonlinearity that per-image
+standardisation cannot remove. We apply the selector unchanged regardless, so
+the Lotus results in Table~\ref{tab:main} include the effect of this
+approximation.
 
-\textbf{Retention.} We keep the top 6\% of contour pixels per image rather than
-thresholding the probability. A fixed threshold keeps a different amount
-depending on how many contours a scene happens to contain, so the budget the
-repair spends would drift from frame to frame. The budget is 6\% because that is
-the positive rate on the training frames, where 6.066\% of contour pixels lie
-within 1\,px of a true step.
+\textbf{Retention.} Rather than thresholding the probability, we keep a fixed
+fraction $\rho$ of the contour pixels per image, in order of probability. A
+fixed threshold keeps a different amount depending on how many contours a scene
+happens to contain, so the budget the repair spends would drift from frame to
+frame. $\rho$ is set to the share of positive contour pixels in the training
+data.
 
-\textbf{Loss and training.} The selector is trained with binary cross-entropy
-averaged over the contour pixels only, so the 89\% of the valid image that carries
-no contour is not a question the selector is asked. A contour pixel is positive if it lies within 1\,px of a depth
-discontinuity in ground truth, where a discontinuity is a depth ratio above
-10\%. We chose that threshold on a validation split rather than on the test
-set: scoring \bfone{} on the 141 frames of the 40 scenes held out of the 795
-training frames, 10\% gives $+12.74\%$ against $+8.66$, $+6.29$ and $+5.28\%$
-for 15, 20 and 25\%. Raising it thins the positives (from 6.07\% of contour
-pixels to 2.13\%) so the fixed budget is then spent mostly on negatives.
-Every hyperparameter of the method, the threshold and the retention alike, was set
-on the validation split; the one exception is a control, and Sec.~\ref{sec:controls}
-states it there. Ground truth is used only to generate these labels and never
-appears in the inference path. The 795
-NYUv2 training frames are split by scene into 654 for training and 141 for
-validation; the deployed checkpoint is the best-validation epoch and has seen
-only those 654, which are a different set from the 654 test frames. Training
-takes 16 minutes and 3.5\,GB of VRAM on one RTX 4090 and never touches the test
-set.
+\textbf{Labels and loss.} A contour pixel is positive if it lies within 1\,px of
+a depth discontinuity in ground truth, where a discontinuity is a step whose
+ratio of neighbouring depths exceeds a threshold $\tau$. The selector is trained
+with binary cross-entropy averaged over the contour pixels only, since pixels off
+the contours are never candidates. Ground truth is used only to generate these
+labels and never appears in the inference path.
 
 \section{Experiments}
 \label{sec:experiments}
@@ -336,6 +296,22 @@ gradients this method operates on, removing 99.4\% of indoor discontinuities. We
 therefore evaluate on NYUv2 and ScanNet, and additionally on Hypersim as a third
 transfer set.
 
+\textbf{Settings of the method.} Barrier sharpening uses $r_b = 2$ and
+$r_f = 3$. The selector is a four-level U-Net with 1.9M parameters. On the
+training frames 6.066\% of contour pixels lie within 1\,px of a true step, so the
+retention is $\rho = 6\%$. The discontinuity threshold is $\tau = 10\%$, chosen on
+a validation split rather than on the test set: scoring \bfone{} on the 141
+frames of the 40 scenes held out of the 795 training frames, 10\% gives
+$+12.74\%$ against $+8.66$, $+6.29$ and $+5.28\%$ for 15, 20 and 25\%. Raising it
+thins the positives (from 6.07\% of contour pixels to 2.13\%) so the fixed budget
+is then spent mostly on negatives. Every hyperparameter of the method was set on
+the validation split; the one exception is a control, and
+Sec.~\ref{sec:controls} states it there. The 795 NYUv2 training frames are split
+by scene into 654 for training and 141 for validation; the deployed checkpoint is
+the best-validation epoch and has seen only those 654, which are a different set
+from the 654 test frames. Training takes 16 minutes and 3.5\,GB of VRAM on one
+RTX 4090.
+
 \textbf{Implementation.} The selector is trained with AdamW at a learning rate of
 $3 \times 10^{-4}$, weight decay $10^{-4}$ and a cosine schedule, for 30 epochs at
 batch size 4. Frames are used at their native $480 \times 640$ with no resizing and
@@ -346,6 +322,49 @@ grid and its default quality filter; ``grid 16'' and ``grid 32'' in
 Sec.~\ref{sec:cost} vary that grid. A frame's contour set is the union of the
 one-pixel boundaries of the returned masks, not the union of the masks, which
 would fill the frame. Timings are on one RTX 4090.
+
+\subsection{Why selection is needed}
+\label{sec:why}
+\label{sec:gtsel}
+
+Applied at every contour that Segment Anything draws on NYUv2, barrier
+sharpening lowers Marigold V2's boundary \bfone{} by 1.90\%
+(Table~\ref{tab:diagnosis}). This is specific to a model whose boundaries are
+already reasonable: on Lotus, whose boundaries start blunter (baseline \bfone{}
+0.0693 against 0.0884), the same unselected sharpening \emph{gains} 10.31\%
+(Table~\ref{tab:controls}).
+
+\begin{table}[t]
+\caption{Why post-hoc sharpening fails on Marigold V2, and what fixes it. \textnormal{NYUv2},
+654 frames. Oracle selection uses ground truth to choose a subset of the
+segmentation contours and moves none of them.}
+\label{tab:diagnosis}
+\centering
+\begin{tabular}{lrr}
+\toprule
+Contours sharpened & share kept & \bfone{} change \\
+\midrule
+all segmentation contours & 100\% & $-1.90\%$ \\
+oracle selection, within 1\,px of a step & 6.07\% & $\mathbf{+43.39\%}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Measuring from each true depth discontinuity to the nearest contour gives a
+median of 1.00\,px, with 66.9\% within 1\,px and 76.9\% within 2\,px. The
+contours are where the boundaries are, but 79.8\% of the contour pixels have no
+depth step anywhere within an eight-pixel window; these are wallpaper patterns,
+floor seams and poster edges. Sharpening there introduces a discontinuity into a
+region that has none.
+
+The 79.8\% uses a generous eight-pixel window; the selection below uses a strict
+one-pixel tolerance. Of the 22{,}167 segmentation contour pixels in an average
+frame (10.6\% of its valid pixels) 1{,}345, or 6.07\%, lie within 1\,px of a true
+discontinuity. An oracle that keeps exactly those, and leaves every kept contour
+where it is, moves the effect from $-1.90\%$ to $+43.39\%$
+(Table~\ref{tab:diagnosis}). The loss is therefore attributable to which contours
+are sharpened rather than to where they lie, and the selector of
+Sec.~\ref{sec:selector} learns that selection.
 
 \subsection{Main result}
 
