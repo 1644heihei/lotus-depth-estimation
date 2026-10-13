@@ -519,16 +519,16 @@ Hypersim, using Marigold V2 throughout.
 
 \begin{table}[t]
 \caption{Generalisation. The selector was trained on \textnormal{NYUv2}; the depth model is
-Marigold V2 in every row. Precision is measured at the same 6\% retention.}
+Marigold V2 in every row.}
 \label{tab:generalisation}
 \centering
-\begin{tabular}{lrrr}
+\begin{tabular}{lrr}
 \toprule
-Evaluation data & no selection & + selector & precision \\
+Evaluation data & no selection & + selector \\
 \midrule
-NYUv2 (in-domain)   & $-1.90\%$ & $\mathbf{+11.92\%}$ & 50.2\% \\
-ScanNet             & $+3.26\%$ & $+2.81\%$           & 17.4\% \\
-Hypersim            & $+2.28\%$ & $-4.64\%$           & 55.8\% \\
+NYUv2 (in-domain)   & $-1.90\%$ & $\mathbf{+11.92\%}$ \\
+ScanNet             & $+3.26\%$ & $+2.81\%$ \\
+Hypersim            & $+2.28\%$ & $-4.64\%$ \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -546,12 +546,6 @@ from 2\% to 20\% on ScanNet, and training on an equal mixture of 795 NYUv2 and
 795 Hypersim frames. Data volume does not account for the gap either. Cutting
 NYUv2 to 393 frames costs 2.2 points of gain ($+11.92\%$ to $+9.72\%$, two
 seeds), against the 9.1 points that separate in-domain from ScanNet.
-
-\textbf{Precision does not order the rows.} The NYUv2-trained selector is more
-precise on Hypersim than in its own domain (55.8\% against 50.2\%) yet scores
-worst there, and precision is not comparable across datasets in any case: the
-share of contour pixels on a real step is 6.07\% on NYUv2 and 22.8\% on
-Hypersim.
 
 \textbf{Cost.}\label{sec:cost} Table~\ref{tab:cost} gives wall-clock time per frame on one RTX 4090, measured
 after warm-up on real frames.
@@ -580,7 +574,7 @@ The selector costs 12.0\,ms and the repair 18.3\,ms, so what this work adds is
 30.3\,ms, 6\% of the depth model's own 495\,ms. The segmentation dominates
 everything else, at 534\,ms to 2{,}603\,ms depending on its point grid.
 
-\textbf{A coarse grid gives a comparable gain.} Grid 16 reaches 92\% of grid 48's gain for
+\textbf{Coarseness of the point grid.} Grid 16 reaches 92\% of grid 48's gain for
 20\% of the segmentation cost. The 0.90-point gap equals
 the standard deviation across seeds, so a single pair of runs cannot settle the
 ordering; paired by seed, however, grid 48 is ahead in all four, by
