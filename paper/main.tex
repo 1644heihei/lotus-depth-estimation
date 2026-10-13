@@ -105,13 +105,15 @@ Our contributions are threefold:
 \end{enumerate}
 
 \begin{figure*}[t]
-\centerline{\includegraphics[width=\textwidth]{figures/qualitative_a.png}}
-\caption{What the method does, on a dining-room frame. Top: the whole frame;
-nothing outside the bands around the selected contours changes. Middle: a 48\,px crop at the
-chair-back boundary, with a depth profile across it. The baseline misses both
-steps ground truth has; the sharpened map reproduces them. The three maps in the crop share a colour scale taken from it. Bottom: the depth discontinuities each map contains,
-which is what \bfone{} compares; green is in both, red is in the prediction
-only, grey is in ground truth only.}
+\centerline{\includegraphics[width=\textwidth]{figures/qualitative_b.png}}
+\caption{What the method does, on a living-room frame. Top: the whole frame;
+nothing outside the bands around the selected contours changes. Middle: a 48\,px
+crop at the lower part of a chair, with a depth profile across it. The baseline
+spreads the step over several pixels; the sharpened map makes it steep. The three
+maps in the crop share a colour scale taken from it. Bottom: the segmentation
+contours (blue) and those the selector kept (red), followed by the depth
+discontinuities each map contains, which is what \bfone{} compares; green is in
+both, red is in the prediction only, grey is in ground truth only.}
 \label{fig:qualitative}
 \end{figure*}
 
@@ -398,7 +400,8 @@ Per-frame scoring shows the mean is not carried by a few frames: 484 of 651
 frames improve (74.3\%), with a median relative gain of $+13.15\%$ and first
 and third quartiles $-0.19\%$ and $+31.57\%$; a quarter of frames are therefore
 slightly worse. Three frames with a baseline \bfone{} of zero are excluded,
-as their relative gain is undefined.
+as their relative gain is undefined. Fig.~\ref{fig:qualitative} shows one of the
+frames with a large gain among those whose AbsRel is at or below the median.
 
 \subsection{Evaluation with Soft Edge Error}
 
