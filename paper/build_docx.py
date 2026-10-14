@@ -70,6 +70,27 @@ def number_citations(src: str) -> str:
     return re.sub(r"\\cite\{([^}]+)\}", one, src)
 
 
+def number_captions(src: str, ja: bool) -> str:
+    """Put "Table n." / "Fig. n." (表 n. / 図 n.) at the start of each caption.
+
+    pandoc writes a caption as a plain paragraph with no number, so a reader of the Word
+    copy sees tables and figures without the labels the PDF prints. Floats are numbered
+    in source order per kind, as LaTeX does. The numbers are arabic because pandoc
+    writes its cross-references ("Table 2") in arabic. Only for the generic layout: the
+    venue template numbers its caption styles itself.
+    """
+    words = {"table": "表" if ja else "Table", "figure": "図" if ja else "Fig."}
+    count = {"table": 0, "figure": 0}
+
+    def one(m: re.Match) -> str:
+        kind = "table" if m.group(1) == "table" else "figure"
+        count[kind] += 1
+        return f"{m.group(0)}{words[kind]} {count[kind]}. "
+
+    return re.sub(r"\\begin\{(table|figure\*?)\}(?:\[[^\]]*\])?(?:(?!\\end\{).)*?\\caption\{",
+                  one, src, flags=re.S)
+
+
 def convert(tex: Path, out: Path, template: Path | None = None) -> None:
     """Render `tex` to `out`. With `template`, fit it to the venue's Word template
     instead of the generic two-column layout; see docx_template.py for what that takes
@@ -83,6 +104,8 @@ def convert(tex: Path, out: Path, template: Path | None = None) -> None:
     # is nothing for pandoc to resolve against, and it drops the citation silently -
     # "Boundary-specific metrics do ." Numbering them here keeps the references readable.
     body = number_citations(src)
+    if not template:
+        body = number_captions(body, "_ja" in tex.stem)
 
     tmp = out.with_suffix(".pandoc.tex")
     tmp.write_text(body, encoding="utf-8")
