@@ -139,9 +139,8 @@ it directly.
 \subsection{Segmentation and depth estimation}
 
 Segment Anything~\cite{sam} is a segmentation model that extracts arbitrary
-regions of an image without being told the object class. Its contours capture
-object boundaries well, but many of them, such as wallpaper patterns and floor
-seams, carry no depth discontinuity. This work uses these contours as candidates
+regions of an image without being told the object class. This work uses its
+contours as candidates
 for depth boundaries and learns to select those that carry a depth step. To our
 knowledge, no prior work uses the contours of a segmentation model as candidates
 for depth boundaries.
@@ -182,10 +181,7 @@ image, the predicted depth and the contours, outputs for each contour pixel the
 probability that it lies on a true depth step, and keeps a fixed fraction of the most probable. Finally, the
 barrier sharpening of Sec.~\ref{sec:repair} is applied at the kept contours. Only
 the selector is trained: the depth model and the segmentation model are frozen,
-and barrier sharpening has no learned parameters. Contours are selected because
-many of them, such as wallpaper patterns and floor seams, carry no depth step,
-and sharpening there creates a discontinuity the scene does not have
-(Sec.~\ref{sec:why}).
+and barrier sharpening has no learned parameters.
 
 \subsection{Barrier sharpening}
 \label{sec:repair}
@@ -240,11 +236,8 @@ logit per pixel. The prediction is standardised per image. For a model that
 emits disparity $v$ rather than log depth we apply $-\log\max(v, 10^{-3})$
 first: disparity rises as depth falls, so feeding it raw would invert the
 signal, and an affine-invariant disparity can be non-positive, which the clamp
-handles. This is monotone in depth but not an affine map of log depth: the
-unknown shift in $v$ survives the logarithm as a nonlinearity that per-image
-standardisation cannot remove. We apply the selector unchanged regardless, so
-the Lotus results in Table~\ref{tab:main} include the effect of this
-approximation.
+handles. This conversion is only an approximation, and the Lotus
+results in Table~\ref{tab:main} include its effect.
 
 \textbf{Retention.} Rather than thresholding the probability, we keep a fixed
 fraction $\rho$ of the contour pixels per image, in order of probability. A
@@ -506,10 +499,7 @@ and a smoothed boundary is what \bfone{} counts against.
 
 The hand-crafted control thresholds a local descriptor of the predicted depth's
 log-gradient. We select its feature by the final metric on the test split rather
-than by ranking quality on held-out data: over four candidates the AUC ordering
-and the \bfone{} ordering are \emph{inverted}, and the feature with the worst
-AUC (0.801) gives the best \bfone{} ($+1.25\%$) while the best AUC (0.876) gives
-the worst ($-2.59\%$). That gives the control an advantage the method does not
+than by ranking quality on held-out data. That gives the control an advantage the method does not
 have, which makes the comparison conservative.
 
 Both random rows spend exactly the budget the selector spends, taken from its
