@@ -162,8 +162,8 @@ propose no new metric.
 
 \begin{figure}[t]
 \centerline{\includegraphics[width=\columnwidth]{figures/pipeline.png}}
-\caption{Pipeline of the method. From the input RGB image, the frozen depth
-model predicts depth and the frozen segmentation model extracts candidate
+\caption{Pipeline of the method. From the input RGB image, the fixed depth
+model predicts depth and the fixed segmentation model extracts candidate
 contours. The selector maps the image, the depth and the contours to the
 probability that each contour pixel lies on a depth step and keeps only a fixed fraction of the most
 probable. Sharpening is applied at the kept contours alone, leaving every other
@@ -179,7 +179,7 @@ model extracts candidate contours from region borders. The selector takes the
 image, the predicted depth and the contours, outputs for each contour pixel the
 probability that it lies on a true depth step, and keeps a fixed fraction of the most probable. Finally, the
 barrier sharpening of Sec.~\ref{sec:repair} is applied at the kept contours. Only
-the selector is trained: the depth model and the segmentation model are frozen,
+the selector is trained: the depth model and the segmentation model are fixed,
 and barrier sharpening has no learned parameters.
 
 \subsection{Barrier sharpening}
