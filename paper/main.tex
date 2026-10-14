@@ -78,9 +78,10 @@ Anything~\cite{sam} partitions an image into objects and regions and extracts th
 contours with high accuracy, and the contour of an object often coincides with a
 depth discontinuity. The predicted depth can then be refilled from both sides of a
 contour, turning a blurred step into a sharp one; we call this sharpening. Applied
-at every contour on Marigold V2, however, it lowers boundary \bfone{}. Most
-segmentation contours, such as wallpaper patterns and floor seams, carry no depth
-step, and sharpening there introduces a discontinuity the scene does not have.
+at every contour on Marigold V2, however, it lowers boundary \bfone{}. This is
+because most segmentation contours, such as wallpaper patterns and floor seams,
+carry no depth step. Sharpening such contours introduces a discontinuity the scene
+does not have.
 
 This suggests that whether sharpening helps is decided less by where the contours
 lie than by which of them it is applied to. Indeed, selecting with ground truth
