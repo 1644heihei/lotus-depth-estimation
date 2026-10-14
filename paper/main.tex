@@ -52,60 +52,72 @@ monocular depth estimation, depth boundaries, segmentation, diffusion models
 
 \section{Introduction}
 
-Recent work repurposes the prior knowledge of large image generation models for
-monocular depth estimation. Marigold~\cite{marigold} fine-tunes the image diffusion
-model Stable Diffusion on synthetic RGB-D data and obtains a depth estimator that
-generalises well from a small amount of training data. Lotus~\cite{lotus} develops
-this further, replacing the multi-step diffusion process with a single-step
-prediction and accelerating inference substantially while keeping its accuracy.
-Marigold V2~\cite{marigoldv2} raises accuracy further by building on a diffusion
-transformer for image editing.
+In recent years, significant progress has been made in applying the prior
+knowledge of large-scale image generation models to monocular depth estimation.
+For instance, Marigold~\cite{marigold} fine-tunes the diffusion-based image
+generation model Stable Diffusion on synthetic RGB-D data, achieving high
+generalization performance with a small amount of training data.
+Lotus~\cite{lotus} builds upon this by replacing the multi-stage diffusion process
+with a single-step prediction, significantly accelerating inference while
+maintaining accuracy. Furthermore, Marigold V2~\cite{marigoldv2} improves accuracy
+by utilizing a diffusion transformer originally designed for image editing.
 
-These methods, however, blur the depth discontinuities at object boundaries. This
-is thought to stem from the smoothness prior of the generative model and from
-predicting in a latent space of reduced resolution, and the step at an occlusion
-boundary can spread over several pixels. Metrics computed over the whole image
-hardly register this degradation, since boundary pixels are a small fraction of
-the image, but boundary-specific metrics reveal it~\cite{depthpro}.
+Despite their high overall accuracy, these methods face a common challenge:
+blurring depth discontinuities at object boundaries. This issue is believed to
+stem from the generative model's inherent prior for smoothness, as well as its
+architectural nature of operating in a low-resolution latent space, which causes
+depth steps at occlusion boundaries to spread over several pixels. Because
+boundary pixels constitute only a tiny fraction of the image, this degradation is
+difficult to capture using standard image-wide evaluation metrics; nevertheless,
+it becomes clearly apparent when evaluated using metrics specifically designed for
+object boundaries~\cite{depthpro}.
 
-To address blurred depth discontinuities, methods that improve boundaries by
-post-processing have been proposed. They leave the depth model untouched and
-apply to the output of any model. Prior work has learned how to correct the
-depth, through a displacement field that re-samples pixels around occlusion
-boundaries~\cite{ramamonjisoa} or through edge-guided
-post-processing~\cite{edgeguided}.
+To address the blurring of depth discontinuities, methods have been proposed that
+improve boundaries through post-processing. These methods do not require
+modifications to the depth model and can be applied to the output of any model.
+Previous research has focused on learning how to correct depth, including methods
+such as learning displacement fields that reposition pixels around occlusion
+boundaries~\cite{ramamonjisoa} and post-processing that uses edges as
+cues~\cite{edgeguided}.
 
-A simpler remedy draws on image segmentation. A segmentation model such as Segment
-Anything~\cite{sam} partitions an image into objects and regions and extracts their
-contours with high accuracy, and the contour of an object often coincides with a
-depth discontinuity. The predicted depth can then be refilled from both sides of a
-contour, turning a blurred step into a sharp one; we call this sharpening. Applied
-at every contour on Marigold V2, however, it lowers boundary \bfone{}. This is
-because most segmentation contours, such as wallpaper patterns and floor seams,
-carry no depth step. Sharpening such contours introduces a discontinuity the scene
-does not have.
+A simpler approach involves using segmentation results as a guide. Segmentation
+models such as Segment Anything~\cite{sam} can segment an image into objects and
+regions and extract their contours with high accuracy. Object contours frequently
+correspond to locations of abrupt depth changes. Therefore, we refill the
+predicted depth on both sides of the contour to make blurry steps more abrupt
+(hereafter referred to as ``sharpening''). However, when sharpening is applied to
+all contours in Marigold V2, the boundary \bfone{} actually decreases. This is
+because the majority of segmentation contours---such as wallpaper patterns or
+floor seams---are contours that do not involve depth discontinuities. Applying
+sharpening to such contours introduces discontinuities that do not actually exist.
 
-This suggests that whether sharpening helps is decided less by where the contours
-lie than by which of them it is applied to. Indeed, selecting with ground truth
-only the contours that lie on true depth steps turns the effect into a gain without
-moving any contour.
+These observations suggest that the effectiveness of sharpening depends far more
+on which contours are selected for processing than on adjusting their exact
+spatial positions. Indeed, when ground-truth depth steps are used to selectively
+filter the contours---without altering their original positions at all---depth
+estimation performance improves.
 
-We therefore propose a method that improves blurred depth discontinuities by
-keeping the sharpening operation fixed and learning only which contours to apply
-it to. The selector is a small U-Net that takes the RGB image, the predicted
-depth and the contours as input, while the depth model and the segmentation model
-are left unchanged. Since the selector is the only trained component, the
-improvement is attributable to learning the selection.
+Inspired by this insight, we propose a learning-based contour selection framework
+to selectively identify depth-discontinuous boundaries. In our approach, the
+underlying depth estimation model and segmentation model remain entirely fixed.
+Instead, we introduce a lightweight U-Net as a binary selector, which takes the
+RGB image, the predicted depth, and the detected contours as inputs. Because only
+this small-scale selector is trained, any performance improvement can be strictly
+attributed to its ability to identify appropriate contours for sharpening.
 
-Our contributions are threefold:
+This study makes the following three main contributions:
 
 \begin{enumerate}
-\item We propose a post-processing method that fixes the sharpening operation and
-      learns only which contours to apply it to.
-\item We show that it improves boundary accuracy beyond training-free methods and
-      classical edge-preserving filters.
-\item We show that it transfers across depth models without retraining but not
-      across datasets.
+\item \textbf{Learning-based contour selection:} We propose a post-processing
+      framework that retains a fixed sharpening operation while introducing a
+      learned selector to identify the optimal contours for depth refinement.
+\item \textbf{Superior boundary accuracy:} We demonstrate that our proposed method
+      outperforms both non-learning-based baselines and classical edge-preserving
+      filters, achieving significant improvements in boundary accuracy.
+\item \textbf{Transferability and dataset sensitivity:} We show that while the
+      trained selector generalizes well across different depth model architectures
+      without retraining, its performance is sensitive to dataset shifts,
+      highlighting key requirements for cross-domain transferability.
 \end{enumerate}
 
 \section{Related Work}
