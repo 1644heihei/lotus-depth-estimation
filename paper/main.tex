@@ -148,8 +148,9 @@ for depth boundaries.
 
 \subsection{Boundary metrics}
 
-Pixel-averaged metrics such as AbsRel and $\delta_1$ hardly reflect blurred
-boundaries, since boundary pixels are a small fraction of the image. Depth
+Pixel-averaged metrics such as AbsRel, the mean absolute error relative to the
+ground-truth depth, and $\delta_1$, the share of pixels whose prediction is
+within a factor of 1.25 of ground truth, hardly reflect blurred boundaries, since boundary pixels are a small fraction of the image. Depth
 Pro~\cite{depthpro} proposed a scale-invariant boundary metric, \bfone{}, that
 declares a depth step where the ratio of neighbouring depths exceeds a threshold,
 sweeps that threshold from 5\% to 25\%, and scores the agreement with F1.
@@ -378,10 +379,8 @@ Lotus, 868M, disparity & 0.0693 & $+10.31\%$ & $\mathbf{+27.83 \pm 1.27\%}$ \\
 \end{table}
 
 All four seeds clear $+10\%$ on Marigold V2, with a 95\% confidence interval
-whose lower bound is $+10.49\%$. Pixel-wise accuracy does not regress either. We
-measure it with AbsRel, the mean absolute error relative to the ground-truth
-depth (lower is better), and $\delta_1$, the share of pixels whose prediction is
-within a factor of 1.25 of ground truth (higher is better). AbsRel moves from
+whose lower bound is $+10.49\%$. Pixel-wise accuracy does not regress either:
+AbsRel moves from
 0.03881 to 0.03860 and $\delta_1$ from 0.97969 to 0.98000, both slightly in the
 better direction.
 
