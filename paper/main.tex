@@ -179,10 +179,8 @@ propose no new metric.
 \centerline{\includegraphics[width=\columnwidth]{figures/pipeline.png}}
 \caption{Pipeline of the method. From the input RGB image, the fixed depth
 model predicts depth and the fixed segmentation model extracts candidate
-contours. The selector maps the image, the depth and the contours to the
-probability that each contour pixel lies on a depth step and keeps only a fixed fraction of the most
-probable. Sharpening is applied at the kept contours alone, leaving every other
-pixel unchanged. Only the selector is trained.}
+contours, and sharpening is applied only at the contours the selector keeps.
+Only the selector is trained.}
 \label{fig:pipeline}
 \end{figure}
 
@@ -224,8 +222,6 @@ where $N(p) = \{\, q \notin B \mid \|q - p\| \le r_f,\ \ell(q) = \ell(p) \,\}$.
 Pixels outside $B$ are unchanged. The component labels come from the contours
 themselves, not from the segmentation masks. The operation has only two
 settings, the band width $r_b$ and the refill radius $r_f$, and learns nothing.
-We require $r_f > r_b$, or $N(p)$ is empty and the operation leaves the map
-unchanged.
 
 The separation of the two sides holds only where a contour closes or reaches the
 image border. Where it ends inside the image the valid region stays connected
@@ -264,8 +260,7 @@ data.
 a depth discontinuity in ground truth, where a discontinuity is a step whose
 ratio of neighbouring depths exceeds a threshold $\tau$. The selector is trained
 with binary cross-entropy averaged over the contour pixels only, since pixels off
-the contours are never candidates. Ground truth is used only to generate these
-labels and never appears in the inference path.
+the contours are never candidates.
 
 \section{Experiments}
 \label{sec:experiments}
@@ -371,12 +366,10 @@ Table~\ref{tab:main} gives the result on two depth models that share no
 architecture, no parameter scale and no output representation. Four selectors
 are trained, differing only in seed, all on Marigold V2's predictions. The same
 four are applied to Lotus with no retraining, adding only the
-disparity-to-log-depth conversion; the deviation reported there is the spread of
-those four selectors on Lotus, not of four Lotus-trained models.
+disparity-to-log-depth conversion.
 
 \begin{table}[t]
-\caption{Main result. Four seeds; $\pm$ is one standard deviation. The same four
-selectors are applied to both models and were trained only on the first. In
+\caption{Main result. Four seeds; $\pm$ is one standard deviation. In
 absolute terms the selector takes \bfone{} from 0.0884 to 0.0989 and from
 0.0693 to 0.0886.}
 \label{tab:main}
@@ -505,8 +498,7 @@ joint bilateral filter, $r{=}1$ & $-4.75\%$  & $-7.15\%$  \\
 \end{tabular}
 \end{table}
 
-The edge-preserving filter row is the classical alternative: a guided or joint
-bilateral filter with the image as guide. Both lose on both models, monotonically
+The edge-preserving filters lose on both models, monotonically
 in the radius, from $-4.75\%$ and $-7.15\%$ at the gentlest setting to
 $-50.14\%$ and $-45.30\%$. A filter can only smooth,
 and a smoothed boundary is what \bfone{} counts against.
@@ -516,8 +508,7 @@ log-gradient. We select its feature by the final metric on the test split rather
 than by ranking quality on held-out data. That gives the control an advantage the method does not
 have, which makes the comparison conservative.
 
-Both random rows spend exactly the budget the selector spends, taken from its
-output frame by frame. Random-pixel selection is close on the two models
+Random-pixel selection is close on the two models
 ($-24.96\%$ and $-22.11\%$), which is what a control that measures the repair
 operation rather than the depth model should do. Random blocks, which keeps the
 contour contiguous, costs almost nothing on either and nothing at all on Lotus:
