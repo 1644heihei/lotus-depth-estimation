@@ -166,8 +166,8 @@ propose no new metric.
 \centerline{\includegraphics[width=\columnwidth]{figures/pipeline.png}}
 \caption{Pipeline of the method. From the input RGB image, the frozen depth
 model predicts depth and the frozen segmentation model extracts candidate
-contours. The selector maps the image, the depth and the contours to a
-probability for each contour pixel and keeps only a fixed fraction of the most
+contours. The selector maps the image, the depth and the contours to the
+probability that each contour pixel lies on a depth step and keeps only a fixed fraction of the most
 probable. Sharpening is applied at the kept contours alone, leaving every other
 pixel unchanged. Only the selector is trained.}
 \label{fig:pipeline}
@@ -178,8 +178,8 @@ pixel unchanged. Only the selector is trained.}
 Fig.~\ref{fig:pipeline} gives an overview of the method. The input is a single
 RGB image. The depth model predicts affine-invariant depth, and the segmentation
 model extracts candidate contours from region borders. The selector takes the
-image, the predicted depth and the contours, outputs a probability for each
-contour pixel, and keeps a fixed fraction of the most probable. Finally, the
+image, the predicted depth and the contours, outputs for each contour pixel the
+probability that it lies on a true depth step, and keeps a fixed fraction of the most probable. Finally, the
 barrier sharpening of Sec.~\ref{sec:repair} is applied at the kept contours. Only
 the selector is trained: the depth model and the segmentation model are frozen,
 and barrier sharpening has no learned parameters. Contours are selected because
@@ -205,7 +205,8 @@ B = \{\, p \in V \mid \mathrm{dist}(p, C) \le r_b \,\},
 labels the connected components of $V \setminus B$, so that the two sides of a
 contour receive different labels, and floods those labels inward one pixel at a
 time until $B$ is covered, giving every $p \in B$ a label $\ell(p)$. Each
-discarded pixel is then refilled from its own side only,
+discarded pixel is then refilled only from pixels outside the band that carry its
+label, that is, from its own side of the contour,
 \begin{equation}
 \hat z(p) = \frac{1}{|N(p)|} \sum_{q \in N(p)} z(q),
 \end{equation}
