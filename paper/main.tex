@@ -88,8 +88,9 @@ lie than by which of them it is applied to. Indeed, selecting with ground truth
 only the contours that lie on true depth steps turns the effect into a gain without
 moving any contour.
 
-We therefore keep the sharpening operation fixed and learn only which contours to
-apply it to. The selector is a small U-Net that takes the RGB image, the predicted
+We therefore propose a method that improves blurred depth discontinuities by
+keeping the sharpening operation fixed and learning only which contours to apply
+it to. The selector is a small U-Net that takes the RGB image, the predicted
 depth and the contours as input, while the depth model and the segmentation model
 are left unchanged. Since the selector is the only trained component, the
 improvement is attributable to learning the selection.
@@ -99,7 +100,7 @@ Our contributions are threefold:
 \begin{enumerate}
 \item We propose a post-processing method that fixes the sharpening operation and
       learns only which contours to apply it to.
-\item We show that it improves boundary accuracy beyond training-free controls and
+\item We show that it improves boundary accuracy beyond training-free methods and
       classical edge-preserving filters.
 \item We show that it transfers across depth models without retraining but not
       across datasets.
