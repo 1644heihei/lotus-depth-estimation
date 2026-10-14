@@ -181,7 +181,7 @@ model extracts candidate contours from region borders. The selector takes the
 image, the predicted depth and the contours, outputs a probability for each
 contour pixel, and keeps a fixed fraction of the most probable. Finally, the
 barrier sharpening of Sec.~\ref{sec:repair} is applied at the kept contours. Only
-the selector is trained: the depth model and the segmentation model are frozen,
+the selector is trained: the depth model and the segmentation model are left unchanged,
 and barrier sharpening has no learned parameters. Contours are selected because
 many of them, such as wallpaper patterns and floor seams, carry no depth step,
 and sharpening there creates a discontinuity the scene does not have
