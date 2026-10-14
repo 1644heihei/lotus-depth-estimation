@@ -268,9 +268,9 @@ labels and never appears in the inference path.
 We evaluate on the 654-frame NYUv2~\cite{nyuv2} test split, scene-disjoint from
 the training frames. The two transfer sets of Sec.~\ref{sec:transfer} are the
 800-frame ScanNet~\cite{scannet} validation sample used by~\cite{marigoldv2} and
-a 300-frame scene-level hold-out of Hypersim~\cite{hypersim}. All three store
-depth as 16-bit millimetres and are read with each dataset's own validity mask
-and depth range; NYUv2 additionally uses the Eigen crop. The metric is the
+a 300-frame scene-level hold-out of Hypersim~\cite{hypersim}. Ground truth is
+used with each dataset's own validity mask and depth range, and NYUv2
+additionally with the Eigen crop. The metric is the
 scale-invariant boundary \bfone{} of Depth Pro~\cite{depthpro}. We report the
 relative change in \bfone{} against each base model's own unsharpened
 prediction. Predictions are aligned to ground truth in their own space before
@@ -316,7 +316,7 @@ would change what $r_b = 2$ means. Contours come from Segment Anything
 grid and its default quality filter; ``grid 16'' and ``grid 32'' in
 Sec.~\ref{sec:cost} vary that grid. A frame's contour set is the union of the
 one-pixel boundaries of the returned masks, not the union of the masks, which
-would fill the frame. Timings are on one RTX 4090.
+would fill the frame.
 
 \subsection{Why selection is needed}
 \label{sec:why}
