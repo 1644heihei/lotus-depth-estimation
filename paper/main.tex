@@ -228,6 +228,12 @@ we report.
 \subsection{The selector}
 \label{sec:selector}
 
+The selector is a network that keeps, among the contours extracted by the
+segmentation model, only those that carry a depth step. It is trained as a binary
+classifier that decides for each contour pixel whether it lies on a true depth
+step, and at inference only the most probable contour pixels are passed to
+barrier sharpening.
+
 \textbf{Inputs and output.} The selector is a U-Net that takes the RGB image
 (3 channels), the predicted depth (1) and the contour mask (1), and emits one
 logit per pixel. The prediction is standardised per image. For a model that
